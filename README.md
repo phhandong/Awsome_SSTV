@@ -1,0 +1,111 @@
+# Awesome SSTV
+
+> 浏览器内 SSTV(慢扫描电视)编解码器 · 纯静态 · 可直接部署到 GitHub Pages
+
+基于对 `SSTVENG.dll`(MMSSTV v1.06,JE3HHT 2002-2003)的逆向成果,在浏览器中从零重构的 SSTV 生成与解码工具。**不依赖原 DLL**,所有算法(调频合成、FM 解调、VIS 识别、同步、斜率校正)均用纯 JavaScript 实现,协议参数来自公开 SSTV 规范。
+
+## 功能
+
+- 🎨 **生成器**:选择图片 + 模式,合成 SSTV 测试音频,可播放 / 下载 WAV
+- 📡 **解码器**:上传 **WAV 或 MP3** 文件,解码出图像;支持频谱瀑布图可视化(700–2700 Hz)
+- ⏱️ **起始时间偏移**:可设置从音频的第几秒开始解码(跳过前导噪声 / 选取特定帧)
+- ⟲ **自测闭环**:一键生成 → 解码 → 原图对照 + PSNR 指标
+- 📻 **支持模式**:Martin 1/2、Scottie 1/2/DX/S1、Robot 36/72
+- 📱 响应式暗色主题,移动端 / 桌面端自适应
+
+## 闭环验证结果(44100 Hz,WAV 往返)
+
+| 模式 | 尺寸 | 色彩 | PSNR |
+|------|------|------|------|
+| Martin 1 | 320×256 | RGB | 29.7 dB |
+| Martin 2 | 320×256 | RGB | 26.7 dB |
+| Scottie 1 | 320×256 | RGB | 34.4 dB |
+| Scottie 2 | 320×256 | RGB | 31.8 dB |
+| Scottie DX | 320×256 | RGB | 41.7 dB |
+| Robot 36 | 320×240 | YUV 4:2:2 | 20.1 dB |
+| Robot 72 | 320×240 | YUV 4:2:2 | 20.6 dB |
+
+> Robot 系因 YUV 4:2:2 色度下采样 inherent 损失,PSNR 较 RGB 模式低,属正常。
+
+运行验证:`node verify.js`
+
+## 本地预览
+
+无需构建。任选一种:
+
+```bash
+# 方式 1:Python 内置服务器
+python -m http.server 8000
+
+# 方式 2:Node
+npx serve
+
+# 然后浏览器打开 http://localhost:8000
+```
+
+直接双击 `index.html` 也能用(ES module 在 file:// 下多数浏览器允许同源加载)。
+
+## 部署到 GitHub Pages
+
+1. 把整个目录推到 GitHub 仓库(如 `Awsome_SSTV`)
+2. 仓库 **Settings → Pages → Source = `main` 分支 `/root`**
+3. 访问 `https://<你的用户名>.github.io/Awsome_SSTV/`
+
+已附带 `.github/workflows/deploy.yml`,推到 main 会自动部署。`.nojekyll` 关闭 Jekyll 处理。
+
+> 所有资源用相对路径(`./js/...`),子路径部署与自定义域都兼容。
+
+## 项目结构
+
+```
+Awsome_SSTV/
+├── index.html              # 单入口
+├── css/style.css           # 暗色响应式主题
+├── js/
+│   ├── modes.js            # 模式数据库(频率常量 + ModeDescriptor,唯一时序真相源)
+│   ├── vis.js              # VIS 头编解码
+│   ├── wav.js              # 纯 JS WAV 读写(44100/16bit/mono + 多格式解码)
+│   ├── encoder.js          # 生成器:图片→VIS→行扫描→PCM(相位连续调频)
+│   ├── decoder.js          # 解码器:PCM→VIS→同步→逐行重建→YUV合并
+│   ├── demod.js            # FM 解调(解析信号瞬时频率)+ 同步搜索 + AutoSlant
+│   ├── audiodecode.js      # 统一音频解码:WAV(纯JS)+ MP3(Web Audio)+ 起始时间切片
+│   ├── fft.js              # 频谱瀑布图
+│   ├── ui.js               # Canvas 渲染 / 拖放 / PSNR
+│   └── app.js              # 入口,事件编排,自测闭环
+├── verify.js               # Node 闭环验证(encode→WAV→decode→PSNR)
+├── .nojekyll               # 关闭 GitHub Pages Jekyll
+└── .github/workflows/deploy.yml
+```
+
+## 算法说明
+
+**生成器**:像素亮度 0–255 线性映射到 1500–2300 Hz(黑→白)。逐行按模式段序列合成,SYNC 1200Hz / PORCH 1500Hz / SCAN 调频。相位累加器保证段边界无爆音。Robot 系按奇偶场顺序输出,YUV 4:2:2。
+
+**解码器**:解析信号(带通 + Hilbert)求瞬时频率 → VIS 头识别(1900Hz leader + 8 位偶校验)→ 1200Hz 同步脉冲搜索 → 按模式段对齐每行首个 SCAN → 逐像素采样重建。行内样本边界用整数 floor 对齐编码端,避免累积漂移。
+
+**音频输入**:WAV 走纯 JS 解析(`wav.js`,无浏览器 API 依赖);MP3 等其他格式走 Web Audio API 的 `decodeAudioData`(`audiodecode.js`),统一输出单声道 PCM,再由 `demod.resample` 重采样到 44100Hz。**起始时间偏移**:在解码前按 `秒 × 采样率` 截取 PCM,可跳过前导静音/噪声或选取录音中的特定 SSTV 帧。
+
+**协议参数来源**:频率常量(1200/1500/1900/2300/1100/1300 Hz)、VIS 编码、模式时序均为公开 SSTV 规范;逆向确认了 SSTVENG.dll 实现这些标准值。详见 `../Setup_RXSSTV/REVERSE_ENGINEERING.md`。
+
+## 扩展更多模式
+
+在 `js/modes.js` 加一条 `ModeDescriptor` 即可,无需改解码主循环。例如 PD120:
+
+```js
+// PD120:640×480,YUV 4:1:1,VIS 95
+const PD120_LINE = [ /* 段定义 */ ];
+MODES[95] = { visCode:95, name:'PD120', width:640, height:480, ... };
+```
+
+## 许可与致谢
+
+- 协议实现:MIT
+- 原始引擎 `SSTVENG.dll` 版权 © JE3HHT,闭源免费软件,本项目未使用其代码,仅参考公开协议规范
+- RXSSTV 外壳 © ON6MU
+
+## 验证命令汇总
+
+```bash
+node verify.js     # 核心:8 模式闭环 PSNR
+node uitest.js     # UI:装配与模式填充(jsdom)
+```

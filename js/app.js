@@ -1,0 +1,330 @@
+// app.js — 入口,装配 UI 与模块编排
+
+import { listModes, getMode, DEFAULT_SAMPLE_RATE } from './modes.js';
+import { encode } from './encoder.js';
+import { decode } from './decoder.js';
+import { encodeWAV, decodeWAV } from './wav.js';
+import { decodeAudioFile, sliceFromStart } from './audiodecode.js';
+import { magnitudeSpectrum, drawSpectrumRow } from './fft.js';
+import * as ui from './ui.js';
+
+const state = {
+  mode: null,
+  sourceImage: null,     // HTMLImageElement / ImageBitmap,用于 encode
+  lastPCM: null,         // Float32Array(生成的音频)
+  lastWAV: null,         // ArrayBuffer
+  uploadedAudio: null,   // { sampleRate, samples, format } 上传解码后的 PCM
+  audioUrl: null,
+};
+
+const FFT_SIZE = 512;
+
+function init() {
+  // 模式下拉
+  const sel = document.getElementById('modeSelect');
+  for (const m of listModes()) {
+    const opt = document.createElement('option');
+    opt.value = m.visCode;
+    opt.textContent = `${m.name}  ·  ${m.width}×${m.height}`;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => selectMode(Number(sel.value)));
+
+  // 主题切换
+  document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+
+  // 拖放区
+  ui.bindDropZone(document.getElementById('dropzone'),
+    document.getElementById('fileInput'), onImageFile);
+  ui.bindDropZone(document.getElementById('wavDropzone'),
+    document.getElementById('wavInput'), onAudioFile);
+
+  // 按钮
+  document.getElementById('useSampleBtn').addEventListener('click', useSampleImage);
+  document.getElementById('encodeBtn').addEventListener('click', onEncode);
+  document.getElementById('playBtn').addEventListener('click', onPlay);
+  const audioPlayer = document.getElementById('audioPlayer');
+  audioPlayer.addEventListener('play', updatePlayButton);
+  audioPlayer.addEventListener('pause', updatePlayButton);
+  audioPlayer.addEventListener('ended', updatePlayButton);
+  audioPlayer.addEventListener('emptied', updatePlayButton);
+  document.getElementById('downloadBtn').addEventListener('click', onDownload);
+  document.getElementById('selfTestBtn').addEventListener('click', onSelfTest);
+  document.getElementById('decodeBtn').addEventListener('click', () => onDecode(state.lastPCM, DEFAULT_SAMPLE_RATE));
+  document.getElementById('decodeUploadedBtn').addEventListener('click', () => {
+    if (!state.uploadedAudio) return;
+    onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
+  });
+
+  selectMode(Number(sel.value));
+  useSampleImage();  // 默认加载示例图
+}
+
+function selectMode(visCode) {
+  state.mode = getMode(visCode);
+  const m = state.mode;
+  document.getElementById('modeInfo').innerHTML =
+    `<span>尺寸 <b>${m.width}×${m.height}</b></span>` +
+    `<span>色彩 <b>${m.colorSpace.toUpperCase()}</b></span>` +
+    `<span>族 <b>${m.family}</b></span>` +
+    `<span>VIS <b>${m.visCode}</b></span>` +
+    `<span>行周期 <b>${m.lineDurationMs.toFixed(1)}ms</b></span>`;
+  // 更新源画布尺寸预览
+  if (state.sourceImage) drawSourcePreview();
+  updateButtons();
+}
+
+function drawSourcePreview() {
+  const m = state.mode;
+  ui.drawImageToCanvas(document.getElementById('srcCanvas'), state.sourceImage, m.width, m.height);
+}
+
+// ---- 图片加载 ----
+function onImageFile(file) {
+  const img = new Image();
+  img.onload = () => {
+    state.sourceImage = img;
+    drawSourcePreview();
+    updateButtons();
+    ui.toast('图片已加载', 'success');
+  };
+  img.onerror = () => ui.toast('图片加载失败', 'error');
+  img.src = URL.createObjectURL(file);
+}
+
+// 程序生成示例测试图(零资源依赖,部署友好)
+function useSampleImage() {
+  const m = state.mode || { width: 320, height: 256 };
+  const c = document.createElement('canvas');
+  c.width = 320; c.height = 256;
+  const ctx = c.getContext('2d');
+  // 彩色渐变 + 色块 + 文字
+  const grad = ctx.createLinearGradient(0, 0, 320, 256);
+  grad.addColorStop(0, '#1a5490'); grad.addColorStop(0.5, '#4fd1c5'); grad.addColorStop(1, '#f6ad55');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, 320, 256);
+  // 色阶条
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = `hsl(${i * 45}, 80%, 55%)`;
+    ctx.fillRect(i * 40, 20, 38, 30);
+  }
+  // 灰阶
+  for (let i = 0; i < 16; i++) {
+    ctx.fillStyle = `rgb(${i * 17},${i * 17},${i * 17})`;
+    ctx.fillRect(i * 20, 210, 18, 30);
+  }
+  // 文字
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 28px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('AWESOME SSTV', 160, 120);
+  ctx.font = '14px sans-serif';
+  ctx.fillText(m.name || '', 160, 145);
+
+  const img = new Image();
+  img.onload = () => {
+    state.sourceImage = img;
+    drawSourcePreview();
+    updateButtons();
+  };
+  img.src = c.toDataURL();
+}
+
+// ---- 生成 ----
+async function onEncode() {
+  if (!state.sourceImage || !state.mode) return;
+  try {
+    ui.toast('生成中…');
+    const pcm = encode(state.sourceImage, state.mode, {
+      sampleRate: DEFAULT_SAMPLE_RATE,
+      onProgress: p => ui.setProgress('encProgress', p),
+    });
+    state.lastPCM = pcm;
+    state.lastWAV = encodeWAV(pcm, DEFAULT_SAMPLE_RATE);
+
+    // 波形 + 频谱预览
+    ui.drawWaveform(document.getElementById('waveform'), pcm);
+    renderSpectrum(pcm);
+
+    // 音频 URL
+    if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+    const blob = new Blob([state.lastWAV], { type: 'audio/wav' });
+    state.audioUrl = URL.createObjectURL(blob);
+    document.getElementById('audioPlayer').src = state.audioUrl;
+
+    ui.setProgress('encProgress', 1);
+    ui.toast('生成完成(' + (pcm.length / DEFAULT_SAMPLE_RATE).toFixed(1) + 's)', 'success');
+    updateButtons();
+  } catch (e) {
+    console.error(e);
+    ui.toast('生成失败: ' + e.message, 'error');
+  }
+}
+
+function renderSpectrum(pcm) {
+  const canvas = document.getElementById('spectrum');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width = 600;
+  const rows = 140;
+  canvas.height = rows;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, rows);
+  const sr = DEFAULT_SAMPLE_RATE;
+  const step = Math.floor((pcm.length - FFT_SIZE) / rows);
+  for (let r = 0; r < rows; r++) {
+    const mag = magnitudeSpectrum(pcm, r * step, FFT_SIZE, sr);
+    drawSpectrumRow(ctx, mag, r, sr, FFT_SIZE, 700, 2700, w);
+  }
+}
+
+async function onPlay() {
+  const a = document.getElementById('audioPlayer');
+  if (!a.paused && !a.ended) {
+    a.pause();
+    return;
+  }
+
+  try {
+    await a.play();
+  } catch (e) {
+    console.error(e);
+    ui.toast('音频播放失败: ' + e.message, 'error');
+  }
+}
+
+function updatePlayButton() {
+  const a = document.getElementById('audioPlayer');
+  const btn = document.getElementById('playBtn');
+
+  if (!a.paused && !a.ended) {
+    btn.textContent = '⏸ 暂停';
+    btn.setAttribute('aria-label', '暂停音频');
+  } else if (a.currentTime > 0 && !a.ended) {
+    btn.textContent = '▶ 继续播放';
+    btn.setAttribute('aria-label', '继续播放音频');
+  } else {
+    btn.textContent = '▶ 播放';
+    btn.setAttribute('aria-label', '播放音频');
+  }
+}
+
+function onDownload() {
+  if (!state.lastWAV) return;
+  const blob = new Blob([state.lastWAV], { type: 'audio/wav' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `sstv_${state.mode.name.replace(/\s+/g, '_')}.wav`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ---- 解码 ----
+// pcm/sr 为待解码音频;起始时间从 #startOffset 读取,截取后再解码
+function onDecode(pcm, sr) {
+  if (!pcm) return;
+  const startSec = parseFloat(document.getElementById('startOffset').value) || 0;
+  try {
+    let work = pcm;
+    if (startSec > 0) {
+      work = sliceFromStart(pcm, sr, startSec);
+      ui.toast(`从 ${startSec}s 开始解码…`);
+    } else {
+      ui.toast('解码中…');
+    }
+    const result = decode(work, sr, {
+      onProgress: p => ui.setProgress('decProgress', p),
+    });
+    ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
+    document.getElementById('resultMeta').textContent =
+      `${result.mode.name} · ${result.width}×${result.height}`;
+    ui.setProgress('decProgress', 1);
+    ui.toast('解码完成', 'success');
+  } catch (e) {
+    console.error(e);
+    ui.toast('解码失败: ' + e.message, 'error');
+  }
+}
+
+// ---- 自测闭环 ----
+async function onSelfTest() {
+  if (!state.sourceImage || !state.mode) return;
+  try {
+    ui.toast('自测闭环中…');
+    const m = state.mode;
+    // 1. 生成
+    const pcm = encode(state.sourceImage, m, { sampleRate: DEFAULT_SAMPLE_RATE });
+    state.lastPCM = pcm;
+    state.lastWAV = encodeWAV(pcm, DEFAULT_SAMPLE_RATE);
+    ui.drawWaveform(document.getElementById('waveform'), pcm);
+    renderSpectrum(pcm);
+    if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+    const blob = new Blob([state.lastWAV], { type: 'audio/wav' });
+    state.audioUrl = URL.createObjectURL(blob);
+    document.getElementById('audioPlayer').src = state.audioUrl;
+
+    // 2. 解码(WAV 往返)
+    const { sampleRate, samples } = decodeWAV(state.lastWAV);
+    const result = decode(samples, sampleRate);
+
+    // 3. 对照显示
+    const origCanvas = document.getElementById('origCanvas');
+    ui.drawImageToCanvas(origCanvas, state.sourceImage, m.width, m.height);
+    // 取原图像素(按 mode 尺寸)
+    const octx = origCanvas.getContext('2d');
+    const origPixels = octx.getImageData(0, 0, m.width, m.height).data;
+
+    const decodedCanvas = document.getElementById('decodedCanvas');
+    ui.renderToCanvas(decodedCanvas, result.pixels, result.width, result.height);
+
+    // 4. PSNR
+    const psnr = ui.computePSNR(origPixels, result.pixels);
+    const out = document.getElementById('psnrOut');
+    const ok = psnr >= 25;
+    out.innerHTML = `PSNR = <span class="${ok ? 'ok' : 'bad'}">${psnr.toFixed(2)} dB</span> · 模式 ${result.mode.name} · ${ok ? '✓ 闭环验证通过' : '⚠ 偏差较大'}`;
+
+    document.getElementById('compareSection').hidden = false;
+    ui.toast(`自测完成 · PSNR ${psnr.toFixed(1)}dB`, ok ? 'success' : 'error');
+    updateButtons();
+  } catch (e) {
+    console.error(e);
+    ui.toast('自测失败: ' + e.message, 'error');
+  }
+}
+
+// ---- 音频上传(WAV / MP3 等)----
+async function onAudioFile(file) {
+  try {
+    ui.toast('解码音频文件中…');
+    const { sampleRate, samples, format } = await decodeAudioFile(file);
+    state.uploadedAudio = { sampleRate, samples, format };
+    // 预览波形 + 频谱
+    ui.drawWaveform(document.getElementById('waveform'), samples);
+    renderSpectrum(samples);
+    document.getElementById('decodeUploadedBtn').disabled = false;
+    const dur = (samples.length / sampleRate).toFixed(1);
+    document.getElementById('audioMeta').textContent =
+      `${format} · ${sampleRate}Hz · ${dur}s`;
+    ui.toast(`${file.name || '音频'} 已加载(${format}, ${sampleRate}Hz, ${dur}s)`, 'success');
+  } catch (e) {
+    console.error(e);
+    ui.toast('音频加载失败: ' + e.message, 'error');
+  }
+}
+
+// ---- 辅助 ----
+function updateButtons() {
+  const hasImg = !!state.sourceImage;
+  const hasPcm = !!state.lastPCM;
+  document.getElementById('encodeBtn').disabled = !hasImg;
+  document.getElementById('playBtn').disabled = !hasPcm;
+  document.getElementById('downloadBtn').disabled = !hasPcm;
+  document.getElementById('selfTestBtn').disabled = !hasImg;
+  document.getElementById('decodeBtn').disabled = !hasPcm;
+}
+
+function toggleTheme() {
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'light' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', next);
+  document.getElementById('themeToggle').textContent = next === 'light' ? '☀' : '🌙';
+}
+
+init();

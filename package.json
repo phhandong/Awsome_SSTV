@@ -1,0 +1,10 @@
+{
+  "name": "awsome_sstv",
+  "version": "1.0.0",
+  "description": "Awesome SSTV — 浏览器内 SSTV 编解码静态站点",
+  "type": "module",
+  "scripts": {
+    "verify": "node verify.js"
+  },
+  "license": "MIT"
+}
