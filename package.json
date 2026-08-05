@@ -4,7 +4,19 @@
   "description": "Awesome SSTV — 浏览器内 SSTV 编解码静态站点",
   "type": "module",
   "scripts": {
-    "verify": "node verify.js"
+    "verify": "node verify.js",
+    "verify:robust": "node verify-robust.js",
+    "test:catalog": "node verify-catalog.js",
+    "test:ui": "node uitest.js",
+    "test:real": "node verify-real.js",
+    "test": "npm run test:catalog && npm run verify && npm run test:ui && npm run test:real",
+    "dump:real": "node dump_result.js"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "jpeg-js": "^0.4.4",
+    "jsdom": "^29.1.1",
+    "mpg123-decoder": "^1.0.3",
+    "pngjs": "^7.0.0"
+  }
 }

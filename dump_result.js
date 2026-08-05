@@ -1,6 +1,7 @@
-// dump_result.js — 解码 MP3 并导出 PPM 图像(肉眼核对)
+// dump_result.js — 解码 MP3 并导出无损 PNG 图像(肉眼核对)
 import { readFileSync, writeFileSync } from 'fs';
 import { MPEGDecoder } from 'mpg123-decoder';
+import { PNG } from 'pngjs';
 import { decode } from './js/decoder.js';
 import { sliceFromStart } from './js/audiodecode.js';
 
@@ -19,18 +20,12 @@ import('./js/demod.js').then(async ({ resample }) => {
   const result = decode(sliced, sr);
   console.log('解码:', result.mode.name, result.width + 'x' + result.height);
 
-  // 写 PPM
+  // 写 PNG。像素已经是 RGBA,直接复制可避免 PPM 文本体积和行尾空格。
   const { width: w, height: h, pixels } = result;
-  let ppm = `P3\n${w} ${h}\n255\n`;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = (y * w + x) * 4;
-      ppm += `${pixels[i]} ${pixels[i+1]} ${pixels[i+2]} `;
-    }
-    ppm += '\n';
-  }
-  writeFileSync('./asset/robot36_decoded.ppm', ppm);
-  console.log('已写出 asset/robot36_decoded.ppm');
+  const png = new PNG({ width: w, height: h });
+  png.data.set(pixels);
+  writeFileSync('./asset/robot36_decoded.png', PNG.sync.write(png));
+  console.log('已写出 asset/robot36_decoded.png');
 
   // 也写一份缩略统计:每 20 行的像素均值
   for (let y = 0; y < h; y += 20) {

@@ -33,11 +33,30 @@ export function decode(samples, sampleRate, opts = {}) {
   if (!mode) throw new Error('未知 VIS 码: ' + vis.visCode7);
   const { width, height } = mode;
 
+  // AVT 不以行同步锁定。VIS 后按其标准行周期连续取样，因而不存在可供
+  // autoSlant 使用的可靠同步脉冲。
+  if (mode.noSync) {
+    const firstScanStarts = new Array(height);
+    const start = vis.sampleOffset + Math.floor((mode.firstScanAfterVisMs || 0) * sr / 1000);
+    // 本地 44.1kHz 编码器逐段向下取整；其他采样率的输入经过重采样后，
+    // 应保持理论行周期。两者混用会在 AVT 的整幅图上积累明显水平漂移。
+    const lineSamples = sampleRate === sr
+      ? mode.lineSegments.reduce(
+        (sum, seg) => sum + Math.floor(seg.durationMs * sr / 1000), 0
+      )
+      : mode.lineDurationMs * sr / 1000;
+    for (let y = 0; y < height; y++) firstScanStarts[y] = Math.round(start + y * lineSamples);
+    const pixels = new Uint8ClampedArray(width * height * 4);
+    decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
+    return { width, height, pixels, mode };
+  }
+
   // 4. 同步脉冲搜索 + 斜率校正
   //    自适应阈值:先用高阈值(0.25,避免假阳性);若脉冲数明显不足(漏检),
   //    降到 0.12 重检(MP3 相噪下后半场 SYNC 单样本落容差比例低)。
   //    再用行周期过滤假阳性(间隔 < 0.6 行周期的相邻脉冲合并)。
-  const need = mode.interlace ? height : (mode.syncAtLineStart ? height - 1 : height);
+  const lineCount = mode.dataLines || height;
+  const need = mode.interlace ? height : (mode.syncAtLineStart ? lineCount - 1 : lineCount);
   let rawPulses = findSyncPulses(freq, sr, 4.0, 0.25);
   let imgPulses = rawPulses.filter(p => p > vis.sampleOffset).sort((a, b) => a - b);
   if (imgPulses.length < need * 0.9) {
@@ -52,7 +71,7 @@ export function decode(samples, sampleRate, opts = {}) {
   //    - syncAtLineStart(Martin/Robot):脉冲 y 是行 y 行首 SYNC,首个 SCAN 在脉冲 + syncToFirstScanMs
   //    - 否则(Scottie):脉冲 i 是行 i 末尾 SYNC,其后 syncToFirstScanMs 是行 (i+1) 首个 SCAN
   const offsetSamples = Math.floor(mode.syncToFirstScanMs * sr / 1000);
-  const firstScanStarts = new Array(height).fill(null);
+  const firstScanStarts = new Array(lineCount).fill(null);
 
   if (mode.interlace) {
     // Robot 36/72:实测真实 MMSSTV 信号为逐行顺序(脉冲 i → 图像行 i+1),
@@ -70,15 +89,15 @@ export function decode(samples, sampleRate, opts = {}) {
   } else if (mode.syncAtLineStart) {
     // Martin:行 0 SYNC 紧跟 VIS(imageStart),脉冲[0] 是行 1 SYNC,脉冲[y-1] 是行 y SYNC
     firstScanStarts[0] = vis.sampleOffset + offsetSamples;
-    for (let y = 1; y < height; y++) {
+    for (let y = 1; y < lineCount; y++) {
       firstScanStarts[y] = (lineStarts[y - 1] !== undefined) ? lineStarts[y - 1] + offsetSamples : null;
     }
   } else {
-    // Scottie:脉冲 i 是行 i 末尾 SYNC,其后 9.0ms(SYNC 时长)是行 (i+1) 的 G 起点
-    // 行 0 的 G 起点 = imageStart + 初始 SYNC(9.0) + porch(1.522)(needsInitialSync 产生)
-    const initSyncSamples = Math.floor((9.0 + 1.522) * sr / 1000);
-    firstScanStarts[0] = vis.sampleOffset + initSyncSamples;
-    for (let y = 1; y < height; y++) {
+    // Scottie/SC2/BW:脉冲位于行尾。首行及后续行到第一个 SCAN 的偏移
+    // 因族而异，不能再写死 Scottie 1 的 9.0ms + 1.522ms。
+    const firstOffset = Math.floor((mode.firstScanAfterVisMs ?? 9.0 + 1.522) * sr / 1000);
+    firstScanStarts[0] = vis.sampleOffset + firstOffset;
+    for (let y = 1; y < lineCount; y++) {
       const p = lineStarts[y - 1];
       firstScanStarts[y] = (p !== undefined) ? p + offsetSamples : null;
     }
@@ -88,6 +107,10 @@ export function decode(samples, sampleRate, opts = {}) {
 
   if (mode.colorSpace === ColorSpace.YUV && mode.interlace) {
     decodeYuvInterlaced(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
+  } else if (mode.lineYuv) {
+    decodeYuvInterlaced(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
+  } else if (mode.pairedLines) {
+    decodeYuvPaired(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
   } else {
     decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
   }
@@ -122,13 +145,74 @@ function decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts)
           const pxStart = Math.floor(lineStart + segOffsetSamples + guard + x * perPixel);
           const pxEnd = Math.floor(lineStart + segOffsetSamples + guard + (x + 1) * perPixel);
           const lum = averageFreqToPixel(freq, pxStart, pxEnd);
-          pixels[(y * width + x) * 4 + channelOff] = lum;
-          pixels[(y * width + x) * 4 + 3] = 255;  // alpha
+          const pixelOff = (y * width + x) * 4;
+          if (mode.colorSpace === ColorSpace.GRAY) {
+            pixels[pixelOff] = lum;
+            pixels[pixelOff + 1] = lum;
+            pixels[pixelOff + 2] = lum;
+          } else {
+            pixels[pixelOff + channelOff] = lum;
+          }
+          pixels[pixelOff + 3] = 255;  // alpha
         }
       }
       segOffsetSamples += segSamples;
     }
     if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / height);
+  }
+  if (opts.onProgress) opts.onProgress(1);
+}
+
+// PD: 一个传输行带有两条亮度线和一套共享的 Cr/Cb。色度按两个相邻显示行
+// 复制，这是 PD 的 4:2:0 采样格式，而不是 Robot 的逐行交替色度。
+function decodeYuvPaired(freq, mode, firstScanStarts, sr, pixels, width, height, opts) {
+  const Y = new Float32Array(width * height);
+  const Cr = new Float32Array(width * height);
+  const Cb = new Float32Array(width * height);
+  Cr.fill(128); Cb.fill(128);
+  const segs = mode.lineSegments;
+  const firstScanIdx = segs.findIndex(s => s.type === SegType.SCAN);
+
+  for (let line = 0; line < mode.dataLines; line++) {
+    const lineStart = firstScanStarts[line];
+    if (lineStart == null) continue;
+    const row0 = line * 2, row1 = row0 + 1;
+    let segOffsetSamples = 0;
+    for (let si = firstScanIdx; si < segs.length; si++) {
+      const seg = segs[si];
+      const segSamples = Math.floor(seg.durationMs * sr / 1000);
+      if (seg.type === SegType.SCAN) {
+        const guard = Math.min(Math.floor(SCAN_GUARD_MS * sr / 1000), segSamples >> 1);
+        const usable = segSamples - guard;
+        const perPixel = usable / width;
+        for (let x = 0; x < width; x++) {
+          const pxStart = Math.floor(lineStart + segOffsetSamples + guard + x * perPixel);
+          const pxEnd = Math.floor(lineStart + segOffsetSamples + guard + (x + 1) * perPixel);
+          const value = averageFreqToPixel(freq, pxStart, pxEnd);
+          if (seg.channel === 'YODD') Y[row0 * width + x] = value;
+          else if (seg.channel === 'YEVEN') Y[row1 * width + x] = value;
+          else {
+            const target = seg.channel === 'Cr' ? Cr : Cb;
+            target[row0 * width + x] = value;
+            target[row1 * width + x] = value;
+          }
+        }
+      }
+      segOffsetSamples += segSamples;
+    }
+    if (opts.onProgress && (line % 16 === 0)) opts.onProgress(line / mode.dataLines);
+  }
+
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = y * width + x;
+      const yv = Y[idx], cr = Cr[idx], cb = Cb[idx];
+      const off = idx * 4;
+      pixels[off] = clamp(yv + 1.402 * (cr - 128));
+      pixels[off + 1] = clamp(yv - 0.344 * (cb - 128) - 0.714 * (cr - 128));
+      pixels[off + 2] = clamp(yv + 1.772 * (cb - 128));
+      pixels[off + 3] = 255;
+    }
   }
   if (opts.onProgress) opts.onProgress(1);
 }

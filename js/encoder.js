@@ -42,7 +42,8 @@ export function encode(image, mode, opts = {}) {
 
   // 2. 预估总样本数,分配缓冲
   const visMs = 610;  // VIS 头总时长
-  const totalMs = visMs + mode.lineDurationMs * height * (mode.interlace ? mode.interlace.fields : 1);
+  const lineCount = mode.dataLines || height;
+  const totalMs = visMs + mode.lineDurationMs * lineCount * (mode.interlace ? mode.interlace.fields : 1);
   const totalSamples = Math.ceil(totalMs * sr / 1000) + sr;  // +1s 余量
   const samples = new Float32Array(totalSamples);
 
@@ -71,9 +72,9 @@ export function encode(image, mode, opts = {}) {
       if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / height);
     }
   } else {
-    for (let y = 0; y < height; y++) {
+    for (let y = 0; y < lineCount; y++) {
       n = appendLine(samples, n, mode, rgba, y, sr, phaseRef);
-      if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / height);
+      if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / lineCount);
     }
   }
 
@@ -102,6 +103,13 @@ function appendLine(samples, n, mode, rgba, y, sr, phaseRef) {
 // 从 RGBA 提取一行某通道的像素值
 function extractChannel(rgba, mode, y, channel, width) {
   const out = new Float32Array(width);
+  if (mode.colorSpace === ColorSpace.GRAY) {
+    for (let x = 0; x < width; x++) {
+      const off = (y * width + x) * 4;
+      out[x] = yuvY(rgba[off], rgba[off + 1], rgba[off + 2]);
+    }
+    return out;
+  }
   if (mode.colorSpace === ColorSpace.RGB) {
     const off = channel === 'R' ? 0 : channel === 'G' ? 1 : 2;
     for (let x = 0; x < width; x++) out[x] = rgba[(y * width + x) * 4 + off];
@@ -109,16 +117,21 @@ function extractChannel(rgba, mode, y, channel, width) {
   }
   // YUV:Y 全分辨率;Cr/Cb 水平 2:1 下采样后映射回 width
   // Robot 系 Cr/Cb 逐行交替(channel='CHROMA'):行 y 偶发 Cr,奇发 Cb
-  if (channel === 'Y') {
+  if (channel === 'Y' || channel === 'YODD' || channel === 'YEVEN') {
+    const sourceY = channel === 'YODD' ? y * 2 : channel === 'YEVEN' ? y * 2 + 1 : y;
     for (let x = 0; x < width; x++) {
-      const r = rgba[(y * width + x) * 4], g = rgba[(y * width + x) * 4 + 1], b = rgba[(y * width + x) * 4 + 2];
+      const r = rgba[(sourceY * width + x) * 4], g = rgba[(sourceY * width + x) * 4 + 1], b = rgba[(sourceY * width + x) * 4 + 2];
       out[x] = yuvY(r, g, b);  // 0..255
     }
   } else {
     const wantCr = channel === 'Cr' || (channel === 'CHROMA' && (y % 2 === 0));
     for (let x = 0; x < width; x++) {
-      const r = rgba[(y * width + x) * 4], g = rgba[(y * width + x) * 4 + 1], b = rgba[(y * width + x) * 4 + 2];
-      out[x] = wantCr ? yuvCr(r, g, b) : yuvCb(r, g, b);
+      const sourceY = mode.pairedLines ? y * 2 : y;
+      const off0 = (sourceY * width + x) * 4;
+      const off1 = mode.pairedLines ? ((sourceY + 1) * width + x) * 4 : off0;
+      const value0 = wantCr ? yuvCr(rgba[off0], rgba[off0 + 1], rgba[off0 + 2]) : yuvCb(rgba[off0], rgba[off0 + 1], rgba[off0 + 2]);
+      const value1 = wantCr ? yuvCr(rgba[off1], rgba[off1 + 1], rgba[off1 + 2]) : yuvCb(rgba[off1], rgba[off1 + 1], rgba[off1 + 2]);
+      out[x] = (value0 + value1) / 2;
     }
   }
   return out;

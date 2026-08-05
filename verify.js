@@ -49,6 +49,16 @@ function psnr(a, b) {
   return 10 * Math.log10(255 * 255 / mse);
 }
 
+function grayReference(rgba) {
+  const out = new Uint8ClampedArray(rgba.length);
+  for (let i = 0; i < rgba.length; i += 4) {
+    const y = Math.round(0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2]);
+    out[i] = out[i + 1] = out[i + 2] = y;
+    out[i + 3] = 255;
+  }
+  return out;
+}
+
 async function testMode(visCode) {
   const mode = getMode(visCode);
   if (!mode) { console.log('  未知模式', visCode); return; }
@@ -69,7 +79,8 @@ async function testMode(visCode) {
   const result = decode(samples, sampleRate);
   const decMs = Date.now() - t1;
 
-  const p = psnr(img.rgba, result.pixels);
+  const expected = mode.colorSpace === 'gray' ? grayReference(img.rgba) : img.rgba;
+  const p = psnr(expected, result.pixels);
   const ok = (mode.family === 'robot') ? p >= 20 : p >= 25;
   console.log(`  ${mode.name.padEnd(12)} ${width}×${height} ${mode.colorSpace}  ` +
     `音频 ${(pcm.length / DEFAULT_SAMPLE_RATE).toFixed(1)}s  ` +

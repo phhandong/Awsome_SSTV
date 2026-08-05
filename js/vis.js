@@ -34,12 +34,16 @@ function visBits(visCode7) {
 // 生成 VIS 头的"音调段"序列,供 encoder 顺序合成
 // 返回: [{freq, durationMs}, ...]
 export function visHeaderSegments(visCode7) {
+  const extended = visCode7 > 0x7f && (visCode7 & 0xff) === 0x23;
   const segs = [
     { freq: FREQ.VIS_START, durationMs: LEADER_MS },
     { freq: FREQ.VIS_BREAK, durationMs: BREAK_MS },
     { freq: FREQ.VIS_BREAK, durationMs: BIT_MS },   // start bit
   ];
-  for (const bit of visBits(visCode7)) {
+  const bits = extended
+    ? Array.from({ length: 16 }, (_, i) => (visCode7 >> i) & 1)
+    : visBits(visCode7);
+  for (const bit of bits) {
     segs.push({ freq: bit ? FREQ.VIS_BIT_1 : FREQ.VIS_BIT_0, durationMs: BIT_MS });
   }
   segs.push({ freq: FREQ.VIS_BREAK, durationMs: BIT_MS });  // stop bit
@@ -98,7 +102,8 @@ export function decodeVISHeader(freq, sr, searchStart = 0) {
     p = leader2End + breakSamples;
   }
 
-  // 读 8 个 data bit,每位在 30ms 窗口中点采样
+  // 读首个 8-bit 字。MMSSTV 的 MP/MR/ML 家族以低字节 0x23 标记，
+  // 后随第二个字节组成无校验的 16 位扩展 VIS。
   const bitSamples = Math.floor(BIT_MS * sr / 1000);
   let byte = 0;
   for (let bit = 0; bit < 8; bit++) {
@@ -108,6 +113,19 @@ export function decodeVISHeader(freq, sr, searchStart = 0) {
     // 1100→1, 1300→0
     if (near(f, FREQ.VIS_BIT_1, 80)) byte |= (1 << bit);
     else if (!near(f, FREQ.VIS_BIT_0, 80)) return null;  // 既不是1也不是0,失败
+  }
+
+  if (byte === 0x23) {
+    let high = 0;
+    for (let bit = 0; bit < 8; bit++) {
+      const mid = p + (8 + bit) * bitSamples + Math.floor(bitSamples / 2);
+      if (mid >= sf.length) return null;
+      const f = sf[mid];
+      if (near(f, FREQ.VIS_BIT_1, 80)) high |= (1 << bit);
+      else if (!near(f, FREQ.VIS_BIT_0, 80)) return null;
+    }
+    const imageStart = p + 16 * bitSamples + Math.floor(BIT_MS * sr / 1000);
+    return { visCode7: (high << 8) | byte, sampleOffset: imageStart };
   }
 
   // 校验偶校验

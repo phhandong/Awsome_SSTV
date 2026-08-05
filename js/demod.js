@@ -68,55 +68,74 @@ function convolve(samples, h) {
 /**
  * FM 解调:返回与样本等长的瞬时频率数组 freq[](Hz)。
  *
- * 方法:1阶 PLL(锁相环),对应 MMSSTV 逆向 DemType=0(CPLL):
- *   - 鉴相器:输入信号 × VCO 正交分量 → 相位误差
- *   - 环路滤波:1阶,FC=1500Hz(ini pllLoopFC)——跟踪速度
- *   - VCO:频率围绕中心(1800Hz,SSTV 中点)摆动
- *   - 输出滤波:1阶低通,FC=900Hz(ini pllOutFC)——平滑频率估计
- *   - fqcSmooth=2200:输出再经轻平滑
+ * 方法:过零测频,对应 MMSSTV CPLL 的周期鉴相思路:
+ *   - 对正过零点做线性插值,相邻过零点间隔直接换算为 Hz
+ *   - 周期测量值放在周期中点,再插值为逐样本频率
+ *   - 钳位 [1000, 2400] Hz(SSTV 视频带)
+ *   - 最后用极短的对称窗口平滑量化噪声
  *
- * PLL 相比"瞬时频率法+移动平均"的优势:环路滤波自适应跟踪载波,锁定后只跟随频率
- * 变化(图像内容),不引入固定线性平滑——边缘不糊,噪声被环路带宽抑制。
+ * 原 DLL 必须实时工作,所以滤波是因果的;网页解码面对完整文件,可把周期估计放回其
+ * 时间中心并做零相位平滑。这仍使用相同的过零鉴相量,但不会把短 Martin 2 像素拖后
+ * 数个载波周期。返回 Hz 值供后续 VIS/SYNC/像素使用。
  */
 export function demodulate(samples, sr = DEFAULT_SAMPLE_RATE) {
   // 1. 带通滤波(去带外噪声,保留 1000-2400Hz)
   const filt = convolve(samples, makeBandpass(sr));
 
-  // 2. 1阶 PLL 跟踪瞬时频率
-  // 环路参数(逆向 ini):pllLoopFC=1500, pllOutFC=900, pllVcoGain=1.0
-  const centerFreq = 1800;  // SSTV 频率中点(1500 黑 ~ 2300 白 的中心)
-  const loopFC = 1500;      // 环路带宽(跟踪速度)
-  const outFC = 900;        // 输出低通(平滑)
-  // 1阶环路滤波系数:alpha = 2π·FC/sr,钳位到 [0,1]
-  const loopAlpha = Math.min(1, 2 * Math.PI * loopFC / sr);
-  const outAlpha = Math.min(1, 2 * Math.PI * outFC / sr);
+  const n = filt.length;
+  const freq = new Float32Array(n);
+  const F_LO = 1000, F_HI = 2400;  // 钳位范围(SSTV 视频带)
 
-  const freq = new Float32Array(samples.length);
-  let vcoPhase = 0;          // VCO 累积相位
-  let vcoFreq = centerFreq;  // VCO 当前频率(Hz)
-  let outFreq = centerFreq;  // 输出滤波后的频率
-
-  for (let i = 0; i < samples.length; i++) {
-    const s = filt[i] || 1e-9;
-    // 鉴相器:输入信号与 VCO 正交分量(sin)的乘积 ≈ 相位误差(经 sin 近似)
-    // 误差 = s · (-sin(vcoPhase)) ,正比于 (vcoPhase - signalPhase) 的 sin
-    const err = -s * Math.sin(vcoPhase);
-    // 环路滤波(1阶低通)→ 频率修正
-    vcoFreq = centerFreq + loopAlpha * (vcoFreq - centerFreq) + loopAlpha * err * sr * 0.5;
-    // 钳位 VCO 频率到 SSTV 带(防失锁飞)
-    if (vcoFreq < 900) vcoFreq = 900;
-    if (vcoFreq > 2600) vcoFreq = 2600;
-    // VCO 相位推进
-    vcoPhase += 2 * Math.PI * vcoFreq / sr;
-    if (vcoPhase > Math.PI) vcoPhase -= 2 * Math.PI;
-    else if (vcoPhase < -Math.PI) vcoPhase += 2 * Math.PI;
-    // 输出低通(平滑频率估计)
-    outFreq = outFreq + outAlpha * (vcoFreq - outFreq);
-    freq[i] = outFreq;
+  // 每个测量点代表一个完整载波周期,时间戳取周期中点。若把测量值从后一个
+  // 过零点起保持,会产生 0.4~1ms 固有滞后,对 Martin 2 的短像素尤其明显。
+  const centers = [];
+  const values = [];
+  let prevSample = filt[0] || 0;
+  let prevCross = -1;
+  for (let i = 1; i < n; i++) {
+    const s = filt[i];
+    if (prevSample <= 0 && s > 0) {
+      const denom = s - prevSample;
+      const cross = (i - 1) + (denom === 0 ? 0 : -prevSample / denom);
+      if (prevCross >= 0) {
+        const period = cross - prevCross;
+        if (period > 0) {
+          let f = sr / period;
+          if (f > F_HI) f = F_HI;
+          else if (f < F_LO) f = F_LO;
+          centers.push((prevCross + cross) * 0.5);
+          values.push(f);
+        }
+      }
+      prevCross = cross;
+    }
+    prevSample = s;
   }
 
-  // 3. 轻平滑(fqcSmooth):极短移动平均抑制残余相噪
-  //    PLL 输出已比瞬时频率法干净,只需极轻平滑(0.3ms),不致模糊像素
+  if (centers.length === 0) {
+    freq.fill(1500);
+    return freq;
+  }
+
+  // 周期中点之间线性插值;两端保持最近的有效估计。
+  const first = Math.max(0, Math.ceil(centers[0]));
+  freq.fill(values[0], 0, first);
+  let lastWritten = first;
+  for (let k = 1; k < centers.length; k++) {
+    const x0 = centers[k - 1], x1 = centers[k];
+    const f0 = values[k - 1], f1 = values[k];
+    const start = Math.max(lastWritten, Math.ceil(x0));
+    const end = Math.min(n, Math.ceil(x1));
+    const span = x1 - x0;
+    for (let i = start; i < end; i++) {
+      const t = span > 0 ? (i - x0) / span : 0;
+      freq[i] = f0 + (f1 - f0) * t;
+    }
+    lastWritten = end;
+  }
+  freq.fill(values[values.length - 1], lastWritten);
+
+  // fqcSmooth 对应的轻平滑。对称窗口没有群延迟,不会改变行/像素相位。
   const smoothLen = Math.max(1, Math.floor(0.0003 * sr));
   return movingAverage(freq, smoothLen);
 }

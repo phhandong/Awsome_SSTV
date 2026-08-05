@@ -66,7 +66,7 @@ await import('./js/app.js');
 await new Promise(r => setTimeout(r, 200));
 
 const sel = document.getElementById('modeSelect');
-console.log('模式数量:', sel.options.length, '(期望 8)');
+console.log('模式数量:', sel.options.length, '(期望 38)');
 console.log('模式列表:', Array.from(sel.options).map(o => o.textContent).join(' | '));
 console.log('modeInfo 内容非空:', document.getElementById('modeInfo').textContent.length > 0);
 console.log('编码按钮启用(有图后):', !document.getElementById('encodeBtn').disabled);
@@ -107,7 +107,7 @@ console.log('播放/暂停按钮切换:', showsPause && showsResume && resetsAft
 // jsdom canvas 不支持 toDataURL,useSampleImage 的 Image.onload 不会触发,
 // 所以图片相关按钮保持 disabled 是测试环境局限,非 app.js bug。核心验证:装配无错 + 模式填充。
 const startOffsetOk = document.getElementById('startOffset').value === '0';
-const ok = sel.options.length === 8 && errors.length === 0 && startOffsetOk &&
+const ok = sel.options.length === 38 && errors.length === 0 && startOffsetOk &&
   showsPause && showsResume && resetsAfterEnd;
 console.log(ok ? '\nUI 冒烟测试通过 ✓(模式装配正确,起始时间控件就绪,无运行时错误)' : '\nUI 冒烟测试失败 ⚠');
 process.exit(ok ? 0 : 1);
