@@ -82,14 +82,19 @@ function drawSourcePreview() {
 // ---- 图片加载 ----
 function onImageFile(file) {
   const img = new Image();
+  const objectUrl = URL.createObjectURL(file);
   img.onload = () => {
+    URL.revokeObjectURL(objectUrl);
     state.sourceImage = img;
     drawSourcePreview();
     updateButtons();
     ui.toast('图片已加载', 'success');
   };
-  img.onerror = () => ui.toast('图片加载失败', 'error');
-  img.src = URL.createObjectURL(file);
+  img.onerror = () => {
+    URL.revokeObjectURL(objectUrl);
+    ui.toast('图片加载失败', 'error');
+  };
+  img.src = objectUrl;
 }
 
 // 程序生成示例测试图(零资源依赖,部署友好)
@@ -159,17 +164,18 @@ async function onEncode() {
   }
 }
 
-function renderSpectrum(pcm) {
+function renderSpectrum(pcm, sampleRate = DEFAULT_SAMPLE_RATE) {
   const canvas = document.getElementById('spectrum');
   const ctx = canvas.getContext('2d');
   const w = canvas.width = 600;
   const rows = 140;
   canvas.height = rows;
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, rows);
-  const sr = DEFAULT_SAMPLE_RATE;
-  const step = Math.floor((pcm.length - FFT_SIZE) / rows);
+  const sr = sampleRate;
+  const maxStart = Math.max(0, pcm.length - FFT_SIZE);
   for (let r = 0; r < rows; r++) {
-    const mag = magnitudeSpectrum(pcm, r * step, FFT_SIZE, sr);
+    const start = rows > 1 ? Math.floor(r * maxStart / (rows - 1)) : 0;
+    const mag = magnitudeSpectrum(pcm, start, FFT_SIZE, sr);
     drawSpectrumRow(ctx, mag, r, sr, FFT_SIZE, 700, 2700, w);
   }
 }
@@ -231,10 +237,10 @@ function onDecode(pcm, sr) {
     }
     const result = decode(work, sr, {
       onProgress: p => ui.setProgress('decProgress', p),
+      dsp: readDspOptions(),
     });
     ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
-    document.getElementById('resultMeta').textContent =
-      `${result.mode.name} · ${result.width}×${result.height}`;
+    document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
     ui.setProgress('decProgress', 1);
     ui.toast('解码完成', 'success');
   } catch (e) {
@@ -262,7 +268,7 @@ async function onSelfTest() {
 
     // 2. 解码(WAV 往返)
     const { sampleRate, samples } = decodeWAV(state.lastWAV);
-    const result = decode(samples, sampleRate);
+    const result = decode(samples, sampleRate, { dsp: readDspOptions() });
 
     // 3. 对照显示
     const origCanvas = document.getElementById('origCanvas');
@@ -289,6 +295,25 @@ async function onSelfTest() {
   }
 }
 
+function readDspOptions() {
+  return {
+    afc: document.getElementById('dspAfc').checked,
+    lms: document.getElementById('dspLms').checked,
+    bpf: document.getElementById('dspBpf').checked,
+  };
+}
+
+function formatDecodeMeta(result) {
+  const enabled = ['AFC', 'LMS', 'BPF'].filter(name => result.dsp?.[name.toLowerCase()]);
+  let dspText = enabled.length ? enabled.join('+') : 'DSP 关闭';
+  if (result.dsp?.afc) {
+    dspText += result.dsp.afcLocked
+      ? ` ${result.dsp.afcOffsetHz >= 0 ? '+' : ''}${result.dsp.afcOffsetHz.toFixed(1)}Hz`
+      : ' 未锁定';
+  }
+  return `${result.mode.name} · ${result.width}×${result.height} · ${dspText}`;
+}
+
 // ---- 音频上传(WAV / MP3 等)----
 async function onAudioFile(file) {
   try {
@@ -297,7 +322,7 @@ async function onAudioFile(file) {
     state.uploadedAudio = { sampleRate, samples, format };
     // 预览波形 + 频谱
     ui.drawWaveform(document.getElementById('waveform'), samples);
-    renderSpectrum(samples);
+    renderSpectrum(samples, sampleRate);
     document.getElementById('decodeUploadedBtn').disabled = false;
     const dur = (samples.length / sampleRate).toFixed(1);
     document.getElementById('audioMeta').textContent =

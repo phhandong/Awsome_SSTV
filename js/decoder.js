@@ -9,7 +9,7 @@
 //   6. Robot YUV:奇偶场合并 + YUV→RGB
 
 import { DEFAULT_SAMPLE_RATE, SegType, ColorSpace, getMode, freqToPixel, FREQ } from './modes.js';
-import { resample, demodulate, findSyncPulses, autoSlant } from './demod.js';
+import { resample, demodulate, applyAFC, findSyncPulses, autoSlant } from './demod.js';
 import { decodeVISHeader } from './vis.js';
 
 /**
@@ -23,8 +23,25 @@ export function decode(samples, sampleRate, opts = {}) {
   const sr = DEFAULT_SAMPLE_RATE;
   let pcm = (sampleRate === sr) ? samples : resample(samples, sampleRate, sr);
 
-  // 2. 解调
-  const freq = demodulate(pcm, sr);
+  // 2. DSP + 解调。嵌套 dsp 供 UI 使用，同时兼容直接传入平铺选项。
+  const dspOpts = opts.dsp || opts;
+  const dspState = {
+    bpf: dspOpts.bpf !== false,
+    lms: dspOpts.lms === true,
+    afc: dspOpts.afc === true,
+    afcOffsetHz: 0,
+    afcLocked: false,
+  };
+  let freq = demodulate(pcm, sr, {
+    ...dspState,
+    lmsOptions: dspOpts.lmsOptions,
+  });
+  if (dspState.afc) {
+    const correction = applyAFC(freq, sr, dspOpts.afcOptions);
+    freq = correction.freq;
+    dspState.afcOffsetHz = correction.offsetHz;
+    dspState.afcLocked = correction.locked;
+  }
 
   // 3. VIS 识别
   const vis = decodeVISHeader(freq, sr, 0);
@@ -48,7 +65,7 @@ export function decode(samples, sampleRate, opts = {}) {
     for (let y = 0; y < height; y++) firstScanStarts[y] = Math.round(start + y * lineSamples);
     const pixels = new Uint8ClampedArray(width * height * 4);
     decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
-    return { width, height, pixels, mode };
+    return { width, height, pixels, mode, dsp: dspState };
   }
 
   // 4. 同步脉冲搜索 + 斜率校正
@@ -65,7 +82,10 @@ export function decode(samples, sampleRate, opts = {}) {
   }
   if (imgPulses.length === 0) throw new Error('未找到同步脉冲');
   imgPulses = filterFalsePulses(imgPulses, mode, sr);
-  const { lineStarts, slope } = autoSlant(imgPulses, mode, sr);
+  // ReSync is a common stage, not a Robot-only repair. Refine every accepted
+  // pulse before fitting the line clock so Martin/Scottie/PD benefit too.
+  imgPulses = resyncPulses(freq, imgPulses, mode, sr);
+  const { lineStarts } = autoSlant(imgPulses, mode, sr);
 
   // 5. 把脉冲位置转换成"每行首个 SCAN 段的绝对样本起点"
   //    - syncAtLineStart(Martin/Robot):脉冲 y 是行 y 行首 SYNC,首个 SCAN 在脉冲 + syncToFirstScanMs
@@ -115,7 +135,7 @@ export function decode(samples, sampleRate, opts = {}) {
     decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
   }
 
-  return { width, height, pixels, mode };
+  return { width, height, pixels, mode, dsp: dspState };
 }
 
 // SCAN 段开头预留 guard(毫秒):避开段边界的瞬态(前接 porch/SYNC 的频率过渡,
@@ -294,11 +314,11 @@ function decodeYuvInterlaced(freq, mode, firstScanStarts, sr, pixels, width, hei
 // 取样本窗口 [s,e) 内的平均频率 → 亮度
 function averageFreqToPixel(freq, s, e) {
   const s0 = Math.max(0, Math.floor(s));
-  const e0 = Math.min(freq.length - 1, Math.ceil(e));
+  const e0 = Math.min(freq.length, Math.ceil(e));
   if (e0 <= s0) return 0;
   let sum = 0;
-  for (let i = s0; i <= e0; i++) sum += freq[i];
-  return freqToPixel(sum / (e0 - s0 + 1));
+  for (let i = s0; i < e0; i++) sum += freq[i];
+  return freqToPixel(sum / (e0 - s0));
 }
 
 function clamp(v) {
@@ -407,19 +427,38 @@ function refineSync(freq, center, searchMs, syncMs, sr) {
   const search = Math.floor(searchMs * sr / 1000);
   const winLen = Math.floor(syncMs * sr / 1000);
   const lo = 1140, hi = 1260;
-  let bestPos = c, bestCnt = -1;
-  for (let off = -search; off <= search; off++) {
-    const s0 = c + off;
-    let cnt = 0;
-    for (let k = 0; k < winLen; k++) {
-      const i = s0 + k;
-      if (i >= 0 && i < freq.length && freq[i] >= lo && freq[i] <= hi) cnt++;
-    }
-    if (cnt > bestCnt) { bestCnt = cnt; bestPos = s0; }
+  const isSync = i => i >= 0 && i < freq.length && freq[i] >= lo && freq[i] <= hi;
+  let pos = c - search;
+  let count = 0;
+  for (let k = 0; k < winLen; k++) if (isSync(pos + k)) count++;
+  let bestPos = pos, bestCnt = count;
+  for (pos++; pos <= c + search; pos++) {
+    if (isSync(pos - 1)) count--;
+    if (isSync(pos + winLen - 1)) count++;
+    if (count > bestCnt) { bestCnt = count; bestPos = pos; }
   }
   // 信号太差(SYNC 段 1200Hz 不足 20%):不信任精化,保留 center
   if (bestCnt < winLen * 0.2) return c;
   return bestPos;
+}
+
+/**
+ * Commit and reset-style ReSync pass for every mode with line sync.
+ * Candidates are refined to the minimum 1200-Hz mismatch metric, then
+ * de-duplicated with the DLL's confirmed five-sample minimum interval.
+ */
+function resyncPulses(freq, pulses, mode, sr) {
+  if (pulses.length === 0) return pulses;
+  const syncSeg = mode.lineSegments.find(seg => seg.type === SegType.SYNC);
+  if (!syncSeg) return pulses;
+  const refined = [];
+  for (const candidate of pulses.slice().sort((a, b) => a - b)) {
+    const best = refineSync(freq, candidate, 5, syncSeg.durationMs, sr);
+    if (refined.length === 0 || best - refined[refined.length - 1] >= 5) {
+      refined.push(best);
+    }
+  }
+  return refined;
 }
 
 /**

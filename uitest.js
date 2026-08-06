@@ -17,6 +17,9 @@ const html = `
   <canvas id="waveform"></canvas>
   <div class="dropzone small" id="wavDropzone"><input type="file" id="wavInput" hidden></div>
   <input type="number" id="startOffset" value="0" min="0" step="0.1">
+  <input type="checkbox" id="dspAfc">
+  <input type="checkbox" id="dspLms">
+  <input type="checkbox" id="dspBpf" checked>
   <span id="audioMeta"></span>
   <canvas id="spectrum"></canvas>
   <button id="decodeBtn" class="btn primary" disabled></button>
@@ -72,6 +75,11 @@ console.log('modeInfo 内容非空:', document.getElementById('modeInfo').textCo
 console.log('编码按钮启用(有图后):', !document.getElementById('encodeBtn').disabled);
 console.log('自测按钮启用:', !document.getElementById('selfTestBtn').disabled);
 console.log('起始时间输入默认值:', document.getElementById('startOffset').value, '(期望 0)');
+console.log('DSP 默认值 AFC/LMS/BPF:',
+  document.getElementById('dspAfc').checked,
+  document.getElementById('dspLms').checked,
+  document.getElementById('dspBpf').checked,
+  '(期望 false/false/true)');
 console.log('捕获的错误:', errors.length === 0 ? '无' : errors.join('; '));
 
 // 播放按钮应在播放、暂停状态之间切换。
@@ -107,7 +115,9 @@ console.log('播放/暂停按钮切换:', showsPause && showsResume && resetsAft
 // jsdom canvas 不支持 toDataURL,useSampleImage 的 Image.onload 不会触发,
 // 所以图片相关按钮保持 disabled 是测试环境局限,非 app.js bug。核心验证:装配无错 + 模式填充。
 const startOffsetOk = document.getElementById('startOffset').value === '0';
+const dspDefaultsOk = !document.getElementById('dspAfc').checked &&
+  !document.getElementById('dspLms').checked && document.getElementById('dspBpf').checked;
 const ok = sel.options.length === 38 && errors.length === 0 && startOffsetOk &&
-  showsPause && showsResume && resetsAfterEnd;
+  dspDefaultsOk && showsPause && showsResume && resetsAfterEnd;
 console.log(ok ? '\nUI 冒烟测试通过 ✓(模式装配正确,起始时间控件就绪,无运行时错误)' : '\nUI 冒烟测试失败 ⚠');
 process.exit(ok ? 0 : 1);

@@ -34,31 +34,45 @@ export function encodeWAV(samples, sampleRate = 44100) {
 }
 
 export function decodeWAV(buf) {
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength < 12) {
+    throw new Error('WAV 文件过短');
+  }
   const view = new DataView(buf);
   if (readString(view, 0) !== 'RIFF' || readString(view, 8) !== 'WAVE') {
     throw new Error('不是有效的 WAV/RIFF 文件');
   }
 
   // 遍历 chunks,找 fmt 与 data
-  let sampleRate = 44100, channels = 1, bitsPerSample = 16;
+  let audioFormat = 0, sampleRate = 0, channels = 0, bitsPerSample = 0;
+  let fmtFound = false;
   let dataOffset = -1, dataLen = 0;
   let offset = 12;
   while (offset + 8 <= buf.byteLength) {
     const id = readString(view, offset);
     const size = view.getUint32(offset + 4, true);
+    const chunkEnd = offset + 8 + size;
+    if (chunkEnd > buf.byteLength) throw new Error(`WAV ${id} chunk 越界`);
     if (id === 'fmt ') {
+      if (size < 16) throw new Error('WAV fmt chunk 过短');
       // 字段相对 chunk 数据起始(offset+8):audioFormat=0, channels=2, sampleRate=4, bits=14
+      audioFormat = view.getUint16(offset + 8, true);
       channels = view.getUint16(offset + 8 + 2, true);
       sampleRate = view.getUint32(offset + 8 + 4, true);
       bitsPerSample = view.getUint16(offset + 8 + 14, true);
+      fmtFound = true;
     } else if (id === 'data') {
       dataOffset = offset + 8;
       dataLen = size;
-      break;
     }
     offset += 8 + size + (size & 1);  // 偶对齐
   }
+  if (!fmtFound) throw new Error('WAV 无 fmt chunk');
   if (dataOffset < 0) throw new Error('WAV 无 data chunk');
+  if (channels < 1 || sampleRate < 1) throw new Error('WAV 声道数或采样率无效');
+  const pcmBits = [8, 16, 24, 32];
+  const supported = (audioFormat === 1 && pcmBits.includes(bitsPerSample)) ||
+    (audioFormat === 3 && bitsPerSample === 32);
+  if (!supported) throw new Error(`不支持的 WAV 格式: format=${audioFormat}, bits=${bitsPerSample}`);
 
   const bytesPerSample = bitsPerSample / 8;
   const frameLen = bytesPerSample * channels;
@@ -67,14 +81,17 @@ export function decodeWAV(buf) {
 
   for (let i = 0; i < numFrames; i++) {
     const base = dataOffset + i * frameLen;
-    let v = readSample(view, base, bitsPerSample);
-    // 立体声取左声道(若多声道,base 处即 channel 0)
-    samples[i] = v;
+    let value = 0;
+    for (let channel = 0; channel < channels; channel++) {
+      value += readSample(view, base + channel * bytesPerSample, bitsPerSample, audioFormat);
+    }
+    samples[i] = value / channels;
   }
   return { sampleRate, channelCount: channels, bitsPerSample, samples };
 }
 
-function readSample(view, offset, bits) {
+function readSample(view, offset, bits, format = 1) {
+  if (format === 3) return view.getFloat32(offset, true);
   switch (bits) {
     case 8:
       // 8-bit WAV 是无符号(0..255),中心 128

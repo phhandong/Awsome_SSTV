@@ -34,17 +34,20 @@ export async function decodeAudioFile(fileOrBuf) {
   // 通过 RIFF 头判定
   const isWav = buf.byteLength > 12 &&
     String.fromCharCode(...new Uint8Array(buf).slice(0, 4)) === 'RIFF';
+  let wavError = null;
   if (isWav) {
     try {
       const r = decodeWAV(buf);
       return { sampleRate: r.sampleRate, samples: r.samples, format: 'WAV' };
     } catch (e) {
       // WAV 解析失败则回退 Web Audio
+      wavError = e;
     }
   }
 
   // MP3 / 其他 → Web Audio
   if (!hasWebAudio()) {
+    if (wavError) throw new Error(`WAV 解析失败: ${wavError.message}`);
     throw new Error('当前环境不支持 MP3 解码(需要浏览器 Web Audio API)。WAV 仍可用。');
   }
   const ctx = audioContext();

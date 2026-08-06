@@ -59,16 +59,19 @@ export const VIS_HEADER_MS = LEADER_MS + BREAK_MS + 10 * BIT_MS;  // 300+10+300 
 export function decodeVISHeader(freq, sr, searchStart = 0) {
   // VIS 检测对瞬时频率做局部平滑(3ms 窗):MP3/有损信号相噪大,单样本 1900Hz
   // 容差判定会失败。此处用平滑副本做 leader/位检测,不影响外部 freq(同步/像素重建仍用原值)。
-  const sf = smoothFreq(freq, 3, sr);
+  const searchEnd = Math.min(freq.length, searchStart + Math.floor(5 * sr));
+  // One extra second covers the leader and all VIS bits when the leader starts
+  // at the end of the search window. Do not smooth minutes of image payload.
+  const smoothEnd = Math.min(freq.length, searchEnd + sr);
+  const sf = smoothFreq(freq, 3, sr, smoothEnd);
 
   // 1. 找 1900Hz leader:在 searchStart..searchStart+5s 内找连续 ~300ms 的 1900Hz 区段。
   //    搜索范围 5s(非 1.5s):真实录音常有前导杂讯/VOX 延迟,leader 可能在 1.7s 甚至更晚
   //    (ROBOT36_test.mp3 的 leader 在 ~2.6s)。1.5s 窗口够不到,导致"未检测到 VIS 头"。
   //    取第一个 ≥100ms 的 leader(leader 总在图像前;Scottie DX 扫描段含连续 1900Hz 亮区
   //    可达 345ms,比 leader 的 300ms 还长,取"最长"会误选图像段)。
-  const leaderMinMs = 100, leaderMaxMs = 1000;
+  const leaderMinMs = 100;
   const leaderMinSamples = Math.floor(leaderMinMs * sr / 1000);
-  const searchEnd = Math.min(sf.length, searchStart + Math.floor(5 * sr));
 
   let leaderStart = -1;
   let i = searchStart;
@@ -142,18 +145,18 @@ function near(a, b, tol) {
 }
 
 // 局部移动平均平滑(窗宽 windowMs),用于 VIS 检测鲁棒化。
-// 逐点窗口平均(仅对 VIS 头前数秒,数据量小,简单实现避免滑动和的边界 bug)。
-function smoothFreq(freq, windowMs, sr) {
+// 前缀和将指定范围内的移动平均降为 O(n)。
+function smoothFreq(freq, windowMs, sr, limit = freq.length) {
   const half = Math.max(0, Math.floor(windowMs * sr / 1000 / 2));
   if (half === 0) return freq;
-  const out = new Float32Array(freq.length);
-  for (let i = 0; i < freq.length; i++) {
-    let s = 0, c = 0;
-    for (let k = -half; k <= half; k++) {
-      const j = i + k;
-      if (j >= 0 && j < freq.length) { s += freq[j]; c++; }
-    }
-    out[i] = s / c;
+  const end = Math.min(freq.length, limit);
+  const prefix = new Float64Array(end + 1);
+  for (let i = 0; i < end; i++) prefix[i + 1] = prefix[i] + freq[i];
+  const out = new Float32Array(end);
+  for (let i = 0; i < end; i++) {
+    const left = Math.max(0, i - half);
+    const right = Math.min(end, i + half + 1);
+    out[i] = (prefix[right] - prefix[left]) / (right - left);
   }
   return out;
 }

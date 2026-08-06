@@ -9,6 +9,7 @@
 - 🎨 **生成器**:选择图片 + 模式,合成 SSTV 测试音频,可播放 / 下载 WAV
 - 📡 **解码器**:上传 **WAV 或 MP3** 文件,解码出图像;支持频谱瀑布图可视化(700–2700 Hz)
 - ⏱️ **起始时间偏移**:可设置从音频的第几秒开始解码(跳过前导噪声 / 选取特定帧)
+- 🎛️ **DSP 开关**:可独立启用/关闭 AFC 自动频偏校正、CLMS/NLMS 自适应线增强和 BPF 带通滤波
 - ⟲ **自测闭环**:一键生成 → 解码 → 原图对照 + PSNR 指标
 - 📻 **支持模式**:Martin 1/2、Scottie 1/2/DX/S1、Robot 36/72
 - 📱 响应式暗色主题,移动端 / 桌面端自适应
@@ -81,7 +82,7 @@ Awsome_SSTV/
 
 **生成器**:像素亮度 0–255 线性映射到 1500–2300 Hz(黑→白)。逐行按模式段序列合成,SYNC 1200Hz / PORCH 1500Hz / SCAN 调频。相位累加器保证段边界无爆音。Robot 系按奇偶场顺序输出,YUV 4:2:2。
 
-**解码器**:解析信号(带通 + Hilbert)求瞬时频率 → VIS 头识别(1900Hz leader + 8 位偶校验)→ 1200Hz 同步脉冲搜索 → 按模式段对齐每行首个 SCAN → 逐像素采样重建。行内样本边界用整数 floor 对齐编码端,避免累积漂移。
+**解码器**:可选 BPF → 可选 CLMS/NLMS 自适应线增强 → 双极性过零测频 → 可选 AFC(以 VIS 1900Hz 为基准校正频偏)→ VIS 识别 → 1200Hz 同步脉冲搜索 → 按模式段对齐每行首个 SCAN → 逐像素采样重建。三个 DSP 模块可在界面独立开关，默认 AFC 关、LMS 关、BPF 开。
 
 **音频输入**:WAV 走纯 JS 解析(`wav.js`,无浏览器 API 依赖);MP3 等其他格式走 Web Audio API 的 `decodeAudioData`(`audiodecode.js`),统一输出单声道 PCM,再由 `demod.resample` 重采样到 44100Hz。**起始时间偏移**:在解码前按 `秒 × 采样率` 截取 PCM,可跳过前导静音/噪声或选取录音中的特定 SSTV 帧。
 
@@ -107,5 +108,7 @@ MODES[95] = { visCode:95, name:'PD120', width:640, height:480, ... };
 
 ```bash
 node verify.js     # 核心:8 模式闭环 PSNR
+node verify-dsp.js # DSP:AFC/LMS/BPF 算法与开关
+node verify-audio.js # WAV:PCM/float/边界校验
 node uitest.js     # UI:装配与模式填充(jsdom)
 ```

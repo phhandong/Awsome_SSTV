@@ -74,6 +74,22 @@
         <span class="opt-hint" id="audioMeta"></span>
       </div>
 
+      <div class="decode-options dsp-options" aria-label="DSP 选项">
+        <span class="opt-hint">DSP</span>
+        <label class="opt" title="自动检测 VIS 1900 Hz 基准并校正接收频偏">
+          <input type="checkbox" id="dspAfc">
+          <span>AFC</span>
+        </label>
+        <label class="opt" title="归一化泄漏 LMS 自适应线增强器">
+          <input type="checkbox" id="dspLms">
+          <span>LMS</span>
+        </label>
+        <label class="opt" title="1000–2400 Hz Hamming 窗 FIR 带通滤波器">
+          <input type="checkbox" id="dspBpf" checked>
+          <span>BPF</span>
+        </label>
+      </div>
+
       <div class="spectrum-wrap">
         <div class="label">频谱瀑布图 <span class="freq-range">700–2700 Hz</span></div>
         <canvas id="spectrum"></canvas>

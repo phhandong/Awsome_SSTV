@@ -175,6 +175,11 @@ body {
 }
 .decode-options .unit { font-size: 12px; }
 .decode-options .opt-hint { font-size: 12px; color: var(--text-dim); }
+.decode-options .opt input[type="checkbox"] {
+  width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer;
+}
+.dsp-options { gap: 8px; margin-top: -6px; }
+.dsp-options .opt { cursor: pointer; user-select: none; }
 
 /* 页脚 */
 footer {

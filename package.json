@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "verify": "node verify.js",
+    "verify:dsp": "node verify-dsp.js",
+    "verify:audio": "node verify-audio.js",
     "verify:robust": "node verify-robust.js",
     "test:catalog": "node verify-catalog.js",
     "test:ui": "node uitest.js",
     "test:real": "node verify-real.js",
-    "test": "npm run test:catalog && npm run verify && npm run test:ui && npm run test:real",
+    "test": "npm run test:catalog && npm run verify:audio && npm run verify:dsp && npm run verify:robust && npm run verify && npm run test:ui && npm run test:real",
     "dump:real": "node dump_result.js"
   },
   "license": "MIT",
