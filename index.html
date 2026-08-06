@@ -1,16 +1,38 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="在浏览器中直接进行 SSTV（慢扫描电视）编解码，支持 Martin、Scottie、Robot 等多种模式。纯前端实现，无需后端服务器。">
+  <meta name="keywords" content="SSTV, 慢扫描电视, 业余无线电, 图像传输, Martin, Scottie, Robot">
+  <meta name="author" content="Awesome SSTV">
+  <meta name="theme-color" content="#4fd1c5">
+
+  <!-- Open Graph / Facebook -->
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Awesome SSTV - 浏览器内慢扫描电视编解码">
+  <meta property="og:description" content="支持 Martin、Scottie、Robot 等多种 SSTV 模式的在线编解码工具">
+
+  <!-- Twitter -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Awesome SSTV - 浏览器内慢扫描电视编解码">
+
   <title>Awesome SSTV · 浏览器内慢扫描电视编解码</title>
+
+  <!-- Preload critical resources -->
+  <link rel="preload" href="./css/style.css" as="style">
+  <link rel="preload" href="./js/app.js" as="script">
+
   <link rel="stylesheet" href="./css/style.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+
+  <!-- Performance optimization -->
+  <link rel="dns-prefetch" href="https://fonts.googleapis.com">
 </head>
 <body>
-  <header class="topbar">
+  <header class="topbar" role="banner">
     <div class="brand">
-      <span class="logo">📡</span>
+      <span class="logo" role="img" aria-label="Radio antenna">📡</span>
       <div>
         <h1>Awesome SSTV</h1>
         <p class="tagline">浏览器内 SSTV 编解码 · 纯静态 · 可部署 GitHub Pages</p>
@@ -19,120 +41,178 @@
     <div class="topbar-actions">
       <label class="mode-select">
         <span>模式</span>
-        <select id="modeSelect"></select>
+        <select id="modeSelect" aria-label="选择 SSTV 模式"></select>
       </label>
-      <button id="themeToggle" class="icon-btn" title="切换主题">🌙</button>
+      <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色/暗色主题">🌙</button>
     </div>
   </header>
 
-  <main class="grid">
+  <main class="grid" role="main">
     <!-- 生成器 -->
-    <section class="panel encoder">
-      <h2><span class="dot enc"></span>生成器 Encoder</h2>
+    <section class="panel encoder" aria-labelledby="encoder-title">
+      <h2 id="encoder-title"><span class="dot enc" aria-hidden="true"></span>生成器 Encoder</h2>
 
-      <div class="dropzone" id="dropzone">
-        <canvas id="srcCanvas" width="320" height="256"></canvas>
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="上传图片">
+        <canvas id="srcCanvas" width="320" height="256" aria-label="源图像预览"></canvas>
         <div class="dropzone-hint" id="dropHint">拖入图片 或 点击选择</div>
-        <input type="file" id="fileInput" accept="image/*" hidden>
+        <input type="file" id="fileInput" accept="image/*" hidden aria-label="选择图片文件">
       </div>
 
-      <div class="mode-info" id="modeInfo"></div>
+      <div class="mode-info" id="modeInfo" role="status" aria-live="polite"></div>
 
       <div class="btn-row">
-        <button id="useSampleBtn" class="btn ghost">用示例图</button>
-        <button id="encodeBtn" class="btn primary" disabled>▶ 生成音频</button>
+        <button id="useSampleBtn" class="btn ghost" aria-label="使用示例图片">用示例图</button>
+        <button id="encodeBtn" class="btn primary" disabled aria-label="生成 SSTV 音频">▶ 生成音频</button>
       </div>
       <div class="btn-row">
-        <button id="playBtn" class="btn" disabled>▶ 播放</button>
-        <button id="downloadBtn" class="btn" disabled>⬇ 下载 WAV</button>
-        <button id="selfTestBtn" class="btn accent" disabled>⟲ 自测闭环</button>
+        <button id="playBtn" class="btn" disabled aria-label="播放音频">▶ 播放</button>
+        <button id="downloadBtn" class="btn" disabled aria-label="下载 WAV 文件">⬇ 下载 WAV</button>
+        <button id="selfTestBtn" class="btn accent" disabled aria-label="执行自测闭环">⟲ 自测闭环</button>
       </div>
 
-      <div class="progress" id="encProgress" hidden><div class="bar"></div></div>
+      <div class="progress" id="encProgress" hidden role="progressbar" aria-label="生成进度">
+        <div class="bar"></div>
+      </div>
 
       <div class="waveform-wrap">
         <div class="label">合成音频波形</div>
-        <canvas id="waveform"></canvas>
-      </div>
-    </section>
-
-    <!-- 解码器 -->
-    <section class="panel decoder">
-      <h2><span class="dot dec"></span>解码器 Decoder</h2>
-
-      <div class="dropzone small" id="wavDropzone">
-        <div class="dropzone-hint">拖入 WAV / MP3 文件 或 点击选择</div>
-        <input type="file" id="wavInput" accept="audio/*" hidden>
-      </div>
-
-      <div class="decode-options">
-        <label class="opt">
-          <span>起始时间</span>
-          <input type="number" id="startOffset" value="0" min="0" step="0.1">
-          <span class="unit">秒</span>
-        </label>
-        <span class="opt-hint" id="audioMeta"></span>
-      </div>
-
-      <div class="decode-options dsp-options" aria-label="DSP 选项">
-        <span class="opt-hint">DSP</span>
-        <label class="opt" title="自动检测 VIS 1900 Hz 基准并校正接收频偏">
-          <input type="checkbox" id="dspAfc">
-          <span>AFC</span>
-        </label>
-        <label class="opt" title="归一化泄漏 LMS 自适应线增强器">
-          <input type="checkbox" id="dspLms">
-          <span>LMS</span>
-        </label>
-        <label class="opt" title="1000–2400 Hz Hamming 窗 FIR 带通滤波器">
-          <input type="checkbox" id="dspBpf" checked>
-          <span>BPF</span>
-        </label>
+        <canvas id="waveform" aria-label="音频波形可视化"></canvas>
       </div>
 
       <div class="spectrum-wrap">
         <div class="label">频谱瀑布图 <span class="freq-range">700–2700 Hz</span></div>
-        <canvas id="spectrum"></canvas>
+        <canvas id="encoderSpectrum" aria-label="编码器频谱瀑布图"></canvas>
+      </div>
+    </section>
+
+    <!-- 解码器 -->
+    <section class="panel decoder" aria-labelledby="decoder-title">
+      <h2 id="decoder-title"><span class="dot dec" aria-hidden="true"></span>解码器 Decoder</h2>
+
+      <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
+        <div class="dropzone-hint">拖入 WAV / MP3 文件 或 点击选择</div>
+        <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
+      </div>
+
+      <div class="audio-player-wrapper" id="audioPlayerWrapper" hidden>
+        <div class="audio-player-controls">
+          <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放/暂停">▶</button>
+          <div class="audio-timeline-container">
+            <canvas id="spectrum" class="audio-spectrum-bg" aria-label="频谱瀑布图"></canvas>
+            <canvas id="audioWaveform" class="audio-waveform" aria-label="音频波形时间轴"></canvas>
+            <div class="audio-timeline-overlay">
+              <div class="audio-selection" id="audioSelection">
+                <div class="audio-selection-handle audio-selection-start" data-handle="start"></div>
+                <div class="audio-selection-handle audio-selection-end" data-handle="end"></div>
+              </div>
+              <div class="audio-playhead" id="audioPlayhead"></div>
+            </div>
+          </div>
+          <div class="audio-time-display">
+            <span id="audioCurrentTime">0:00</span>
+            <span class="audio-time-separator">/</span>
+            <span id="audioDuration">0:00</span>
+          </div>
+        </div>
+        <div class="audio-selection-info">
+          <span>选中区域: <strong id="audioSelectionStart">0.0</strong>s ~ <strong id="audioSelectionEnd">0.0</strong>s</span>
+          <button id="resetSelectionBtn" class="btn-link">重置选区</button>
+        </div>
+      </div>
+
+      <div class="decode-options">
+        <span class="opt-hint" id="audioMeta" role="status" aria-live="polite"></span>
+      </div>
+
+      <div class="dsp-options decode-options" aria-label="DSP 选项">
+        <span class="opt-hint">DSP</span>
+        <label class="opt" title="自动检测 VIS 1900 Hz 基准并校正接收频偏">
+          <input type="checkbox" id="dspAfc" aria-label="启用 AFC 自动频率控制">
+          <span>AFC</span>
+        </label>
+        <label class="opt" title="归一化泄漏 LMS 自适应线增强器">
+          <input type="checkbox" id="dspLms" aria-label="启用 LMS 自适应滤波">
+          <span>LMS</span>
+        </label>
+        <label class="opt" title="1000–2400 Hz Hamming 窗 FIR 带通滤波器">
+          <input type="checkbox" id="dspBpf" checked aria-label="启用带通滤波器">
+          <span>BPF</span>
+        </label>
       </div>
 
       <div class="btn-row">
-        <button id="decodeBtn" class="btn primary" disabled>▶ 解码</button>
-        <button id="decodeUploadedBtn" class="btn" disabled>解码上传的音频</button>
+        <button id="decodeBtn" class="btn primary" disabled aria-label="解码生成的音频">▶ 解码</button>
+        <button id="decodeUploadedBtn" class="btn" disabled aria-label="解码上传的音频">解码上传的音频</button>
       </div>
-      <div class="progress" id="decProgress" hidden><div class="bar"></div></div>
+      <div class="progress" id="decProgress" hidden role="progressbar" aria-label="解码进度">
+        <div class="bar"></div>
+      </div>
 
       <div class="result-wrap">
-        <div class="label">解码结果 <span id="resultMeta" class="meta"></span></div>
-        <canvas id="resultCanvas" width="320" height="256"></canvas>
+        <div class="label">解码结果 <span id="resultMeta" class="meta" role="status" aria-live="polite"></span></div>
+        <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
       </div>
     </section>
   </main>
 
   <!-- 自测对照 -->
-  <section class="compare" id="compareSection" hidden>
-    <h2>自测对照</h2>
+  <section class="compare" id="compareSection" hidden aria-labelledby="compare-title">
+    <h2 id="compare-title">自测对照</h2>
     <div class="compare-grid">
       <div>
         <div class="label">原图</div>
-        <canvas id="origCanvas" width="320" height="256"></canvas>
+        <canvas id="origCanvas" width="320" height="256" aria-label="原始图像"></canvas>
       </div>
       <div>
         <div class="label">解码图</div>
-        <canvas id="decodedCanvas" width="320" height="256"></canvas>
+        <canvas id="decodedCanvas" width="320" height="256" aria-label="解码后的图像"></canvas>
       </div>
     </div>
-    <div class="psnr" id="psnrOut"></div>
+    <div class="psnr" id="psnrOut" role="status" aria-live="polite"></div>
   </section>
 
-  <footer>
-    <p>基于 <strong>SSTVENG.dll (MMSSTV v1.06, JE3HHT)</strong> 逆向重构 · 协议参数来自公开 SSTV 规范 · 纯前端实现,无后端</p>
-    <p class="hint">支持模式:Martin 1/2 · Scottie 1/2/DX/S1 · Robot 36/72 · 闭环验证 PSNR ≥ 30dB</p>
+  <footer role="contentinfo">
+    <p>基于 <strong>MMSSTV v1.06, JE3HHT</strong> 重构 · 协议参数来自公开 SSTV 规范 · 纯前端实现,无后端</p>
   </footer>
 
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" hidden role="alert" aria-live="assertive"></div>
 
-  <audio id="audioPlayer"></audio>
+  <audio id="audioPlayer" aria-label="SSTV 音频播放器"></audio>
 
   <script type="module" src="./js/app.js"></script>
+
+  <!-- 性能监控（可选） -->
+  <script>
+    // 性能指标收集
+    if ('PerformanceObserver' in window) {
+      try {
+        const perfObserver = new PerformanceObserver((list) => {
+          for (const entry of list.getEntries()) {
+            // 可以发送到分析服务
+            console.debug('Performance:', entry.name, entry.duration.toFixed(2) + 'ms');
+          }
+        });
+        perfObserver.observe({ entryTypes: ['measure', 'navigation'] });
+      } catch (e) {
+        // 静默失败
+      }
+    }
+
+    // 页面加载完成时间
+    window.addEventListener('load', () => {
+      if (window.performance && window.performance.timing) {
+        const loadTime = window.performance.timing.loadEventEnd - window.performance.timing.navigationStart;
+        console.info('Page load time:', (loadTime / 1000).toFixed(2) + 's');
+      }
+    });
+
+    // Service Worker 支持（PWA 准备）
+    if ('serviceWorker' in navigator) {
+      // 取消注释以启用 PWA
+      // window.addEventListener('load', () => {
+      //   navigator.serviceWorker.register('./sw.js').catch(() => {});
+      // });
+    }
+  </script>
 </body>
 </html>

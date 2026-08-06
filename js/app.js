@@ -6,6 +6,7 @@ import { decode } from './decoder.js';
 import { encodeWAV, decodeWAV } from './wav.js';
 import { decodeAudioFile, sliceFromStart } from './audiodecode.js';
 import { magnitudeSpectrum, drawSpectrumRow } from './fft.js';
+import { AudioPlayer } from './audioPlayer.js';
 import * as ui from './ui.js';
 
 const state = {
@@ -15,6 +16,9 @@ const state = {
   lastWAV: null,         // ArrayBuffer
   uploadedAudio: null,   // { sampleRate, samples, format } 上传解码后的 PCM
   audioUrl: null,
+  isProcessing: false,   // 防止重复处理
+  audioPlayer: null,     // 交互式音频播放器
+  audioSelection: { start: 0, end: 0 }, // 选中的音频区域
 };
 
 const FFT_SIZE = 512;
@@ -32,6 +36,11 @@ function init() {
 
   // 主题切换
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
+
+  // 恢复保存的主题
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  document.getElementById('themeToggle').textContent = savedTheme === 'light' ? '☀' : '🌙';
 
   // 拖放区
   ui.bindDropZone(document.getElementById('dropzone'),
@@ -56,8 +65,67 @@ function init() {
     onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
   });
 
+  // 初始化音频播放器
+  state.audioPlayer = new AudioPlayer('audioPlayerWrapper', {
+    onSelectionChange: (selection) => {
+      state.audioSelection = selection;
+      console.log('选区更新:', selection);
+    }
+  });
+
+  // 初始化默认选区
+  state.audioSelection = { start: 0, end: 0, duration: 0 };
+
+  // 键盘快捷键
+  setupKeyboardShortcuts();
+
+  // 添加拖放区键盘支持
+  setupDropzoneKeyboard();
+
   selectMode(Number(sel.value));
   useSampleImage();  // 默认加载示例图
+}
+
+// 键盘快捷键
+function setupKeyboardShortcuts() {
+  document.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd + Enter: 生成音频
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      e.preventDefault();
+      const encodeBtn = document.getElementById('encodeBtn');
+      if (!encodeBtn.disabled) encodeBtn.click();
+    }
+    // Space: 播放/暂停
+    if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'SELECT') {
+      e.preventDefault();
+      const playBtn = document.getElementById('playBtn');
+      if (!playBtn.disabled) playBtn.click();
+    }
+    // Ctrl/Cmd + D: 解码
+    if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
+      e.preventDefault();
+      const decodeBtn = document.getElementById('decodeBtn');
+      if (!decodeBtn.disabled) decodeBtn.click();
+    }
+    // Ctrl/Cmd + T: 切换主题
+    if ((e.ctrlKey || e.metaKey) && e.key === 't') {
+      e.preventDefault();
+      toggleTheme();
+    }
+  });
+}
+
+// 拖放区键盘支持
+function setupDropzoneKeyboard() {
+  ['dropzone', 'wavDropzone'].forEach(id => {
+    const zone = document.getElementById(id);
+    zone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        zone.click();
+      }
+    });
+  });
 }
 
 function selectMode(visCode) {
@@ -135,9 +203,21 @@ function useSampleImage() {
 
 // ---- 生成 ----
 async function onEncode() {
-  if (!state.sourceImage || !state.mode) return;
+  if (!state.sourceImage || !state.mode || state.isProcessing) return;
+
+  state.isProcessing = true;
+  const encodeBtn = document.getElementById('encodeBtn');
+  encodeBtn.classList.add('loading');
+
   try {
     ui.toast('生成中…');
+
+    // 使用 requestIdleCallback 优化性能
+    await new Promise(resolve => {
+      const callback = window.requestIdleCallback || ((cb) => setTimeout(cb, 0));
+      callback(resolve);
+    });
+
     const pcm = encode(state.sourceImage, state.mode, {
       sampleRate: DEFAULT_SAMPLE_RATE,
       onProgress: p => ui.setProgress('encProgress', p),
@@ -147,7 +227,7 @@ async function onEncode() {
 
     // 波形 + 频谱预览
     ui.drawWaveform(document.getElementById('waveform'), pcm);
-    renderSpectrum(pcm);
+    renderSpectrumToCanvas('encoderSpectrum', pcm, DEFAULT_SAMPLE_RATE);
 
     // 音频 URL
     if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
@@ -156,18 +236,30 @@ async function onEncode() {
     document.getElementById('audioPlayer').src = state.audioUrl;
 
     ui.setProgress('encProgress', 1);
-    ui.toast('生成完成(' + (pcm.length / DEFAULT_SAMPLE_RATE).toFixed(1) + 's)', 'success');
+    const duration = (pcm.length / DEFAULT_SAMPLE_RATE).toFixed(1);
+    ui.toast(`生成完成 ${duration}s · ${(state.lastWAV.byteLength / 1024).toFixed(0)}KB`, 'success');
     updateButtons();
   } catch (e) {
     console.error(e);
     ui.toast('生成失败: ' + e.message, 'error');
+  } finally {
+    state.isProcessing = false;
+    encodeBtn.classList.remove('loading');
   }
 }
 
 function renderSpectrum(pcm, sampleRate = DEFAULT_SAMPLE_RATE) {
-  const canvas = document.getElementById('spectrum');
+  renderSpectrumToCanvas('spectrum', pcm, sampleRate);
+}
+
+function renderSpectrumToCanvas(canvasId, pcm, sampleRate = DEFAULT_SAMPLE_RATE) {
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) {
+    console.warn(`Canvas ${canvasId} not found`);
+    return;
+  }
   const ctx = canvas.getContext('2d');
-  const w = canvas.width = 600;
+  const w = canvas.width = canvas.clientWidth || 600;
   const rows = 140;
   canvas.height = rows;
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, rows);
@@ -223,44 +315,76 @@ function onDownload() {
 }
 
 // ---- 解码 ----
-// pcm/sr 为待解码音频;起始时间从 #startOffset 读取,截取后再解码
+// pcm/sr 为待解码音频;起始和结束时间从音频播放器选区读取
 function onDecode(pcm, sr) {
-  if (!pcm) return;
-  const startSec = parseFloat(document.getElementById('startOffset').value) || 0;
-  try {
-    let work = pcm;
-    if (startSec > 0) {
-      work = sliceFromStart(pcm, sr, startSec);
-      ui.toast(`从 ${startSec}s 开始解码…`);
-    } else {
-      ui.toast('解码中…');
+  if (!pcm || state.isProcessing) return;
+
+  state.isProcessing = true;
+  const decodeBtn = document.getElementById('decodeBtn');
+  const decodeUploadedBtn = document.getElementById('decodeUploadedBtn');
+  decodeBtn.classList.add('loading');
+  decodeUploadedBtn.classList.add('loading');
+
+  // 从音频播放器获取选区，如果没有则使用完整音频
+  const totalDuration = pcm.length / sr;
+  const startSec = state.audioSelection.start || 0;
+  const endSec = state.audioSelection.end > 0 ? state.audioSelection.end : totalDuration;
+  const duration = endSec - startSec;
+
+  // 使用 setTimeout 让 UI 更新
+  setTimeout(() => {
+    try {
+      let work = pcm;
+
+      // 根据选区截取音频
+      if (startSec > 0 || endSec < totalDuration) {
+        const startSample = Math.floor(startSec * sr);
+        const endSample = Math.min(Math.floor(endSec * sr), pcm.length);
+        work = pcm.slice(startSample, endSample);
+        ui.toast(`解码选中区域 ${startSec.toFixed(1)}s ~ ${endSec.toFixed(1)}s (${duration.toFixed(1)}s)…`);
+      } else {
+        ui.toast('解码完整音频…');
+      }
+
+      const result = decode(work, sr, {
+        onProgress: p => ui.setProgress('decProgress', p),
+        dsp: readDspOptions(),
+      });
+
+      ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
+      document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
+      ui.setProgress('decProgress', 1);
+      ui.toast(`解码完成 · ${result.mode.name}`, 'success');
+    } catch (e) {
+      console.error(e);
+      ui.toast('解码失败: ' + e.message, 'error');
+    } finally {
+      state.isProcessing = false;
+      decodeBtn.classList.remove('loading');
+      decodeUploadedBtn.classList.remove('loading');
     }
-    const result = decode(work, sr, {
-      onProgress: p => ui.setProgress('decProgress', p),
-      dsp: readDspOptions(),
-    });
-    ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
-    document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
-    ui.setProgress('decProgress', 1);
-    ui.toast('解码完成', 'success');
-  } catch (e) {
-    console.error(e);
-    ui.toast('解码失败: ' + e.message, 'error');
-  }
+  }, 50);
 }
 
 // ---- 自测闭环 ----
 async function onSelfTest() {
-  if (!state.sourceImage || !state.mode) return;
+  if (!state.sourceImage || !state.mode || state.isProcessing) return;
+
+  state.isProcessing = true;
+  const selfTestBtn = document.getElementById('selfTestBtn');
+  selfTestBtn.classList.add('loading');
+
   try {
     ui.toast('自测闭环中…');
     const m = state.mode;
+
     // 1. 生成
     const pcm = encode(state.sourceImage, m, { sampleRate: DEFAULT_SAMPLE_RATE });
     state.lastPCM = pcm;
     state.lastWAV = encodeWAV(pcm, DEFAULT_SAMPLE_RATE);
     ui.drawWaveform(document.getElementById('waveform'), pcm);
-    renderSpectrum(pcm);
+    renderSpectrumToCanvas('encoderSpectrum', pcm, DEFAULT_SAMPLE_RATE);
+
     if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
     const blob = new Blob([state.lastWAV], { type: 'audio/wav' });
     state.audioUrl = URL.createObjectURL(blob);
@@ -286,12 +410,19 @@ async function onSelfTest() {
     const ok = psnr >= 25;
     out.innerHTML = `PSNR = <span class="${ok ? 'ok' : 'bad'}">${psnr.toFixed(2)} dB</span> · 模式 ${result.mode.name} · ${ok ? '✓ 闭环验证通过' : '⚠ 偏差较大'}`;
 
-    document.getElementById('compareSection').hidden = false;
+    const compareSection = document.getElementById('compareSection');
+    compareSection.hidden = false;
+    // 平滑滚动到对比区域
+    compareSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
     ui.toast(`自测完成 · PSNR ${psnr.toFixed(1)}dB`, ok ? 'success' : 'error');
     updateButtons();
   } catch (e) {
     console.error(e);
     ui.toast('自测失败: ' + e.message, 'error');
+  } finally {
+    state.isProcessing = false;
+    selfTestBtn.classList.remove('loading');
   }
 }
 
@@ -320,9 +451,13 @@ async function onAudioFile(file) {
     ui.toast('解码音频文件中…');
     const { sampleRate, samples, format } = await decodeAudioFile(file);
     state.uploadedAudio = { sampleRate, samples, format };
-    // 预览波形 + 频谱
-    ui.drawWaveform(document.getElementById('waveform'), samples);
+
+    // 先渲染频谱到播放器背景
     renderSpectrum(samples, sampleRate);
+
+    // 然后加载到交互式播放器（会在频谱上叠加波形）
+    await state.audioPlayer.loadAudio(samples, sampleRate);
+
     document.getElementById('decodeUploadedBtn').disabled = false;
     const dur = (samples.length / sampleRate).toFixed(1);
     document.getElementById('audioMeta').textContent =
@@ -350,6 +485,19 @@ function toggleTheme() {
   const next = cur === 'light' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', next);
   document.getElementById('themeToggle').textContent = next === 'light' ? '☀' : '🌙';
+
+  // 保存主题偏好
+  try {
+    localStorage.setItem('theme', next);
+  } catch (e) {
+    console.warn('无法保存主题偏好:', e);
+  }
+
+  // 主题切换动画
+  document.body.style.transition = 'background 0.3s, color 0.3s';
+  setTimeout(() => {
+    document.body.style.transition = '';
+  }, 300);
 }
 
 init();
