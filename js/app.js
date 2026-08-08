@@ -24,6 +24,7 @@ const state = {
   audioSelection: { start: 0, end: 0 }, // 选中的音频区域
   webDecoder: null,
   micActive: false,
+  realtimeDecode: null,
   decodedResult: null,
 };
 
@@ -43,6 +44,7 @@ function init() {
     sel.appendChild(opt);
   }
   sel.addEventListener('change', () => selectMode(Number(sel.value)));
+  enhanceSelect(sel);
   document.getElementById('autoReceive').addEventListener('change', updateReceiveModeLabel);
 
   // 主题切换
@@ -76,12 +78,14 @@ function init() {
     if (!state.uploadedAudio) return;
     onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
   });
+  document.getElementById('realtimeDecodeBtn').addEventListener('click', toggleRealtimeDecode);
   document.getElementById('saveImageBtn').addEventListener('click', saveDecodedImage);
   const imageFormat = document.getElementById('imageFormat');
   try { imageFormat.value = localStorage.getItem('sstv.imageFormat') || 'png'; } catch (_) {}
   imageFormat.addEventListener('change', () => {
     try { localStorage.setItem('sstv.imageFormat', imageFormat.value); } catch (_) {}
   });
+  enhanceSelect(imageFormat);
   for (const id of ['decodeStartSec', 'decodeEndSec']) {
     document.getElementById(id).addEventListener('input', onRangeInput);
   }
@@ -101,7 +105,8 @@ function init() {
     onSelectionChange: (selection) => {
       state.audioSelection = selection;
       syncRangeInputs(selection);
-    }
+    },
+    onPlaybackChange: handlePlaybackChange,
   });
 
   // 初始化默认选区
@@ -304,6 +309,84 @@ function renderSpectrumToCanvas(canvasId, pcm, sampleRate = DEFAULT_SAMPLE_RATE)
   }
 }
 
+// 原生 select 的弹出面板由操作系统绘制，无法稳定应用圆角；保留原生控件作为值源，
+// 用轻量自定义菜单提供一致的视觉样式和点击交互。
+function enhanceSelect(select) {
+  if (!select || select.dataset.enhanced) return;
+  const host = select.closest('.mode-select, .format-select-wrap');
+  if (!host) return;
+  select.dataset.enhanced = 'true';
+  host.classList.add('custom-select-host');
+
+  const trigger = document.createElement('button');
+  trigger.type = 'button';
+  trigger.className = 'custom-select-trigger';
+  trigger.setAttribute('aria-haspopup', 'listbox');
+  trigger.setAttribute('aria-expanded', 'false');
+
+  const menu = document.createElement('div');
+  menu.className = 'custom-select-menu';
+  menu.setAttribute('role', 'listbox');
+  menu.hidden = true;
+
+  const sync = () => {
+    const option = select.options[select.selectedIndex];
+    trigger.textContent = option?.textContent || '';
+    trigger.setAttribute('aria-label', select.getAttribute('aria-label') || '选择');
+    menu.querySelectorAll('[role="option"]').forEach(item => {
+      const selected = item.dataset.value === select.value;
+      item.classList.toggle('is-selected', selected);
+      item.setAttribute('aria-selected', String(selected));
+    });
+  };
+
+  const close = () => {
+    menu.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    host.classList.remove('is-open');
+  };
+  const open = () => {
+    sync();
+    menu.hidden = false;
+    trigger.setAttribute('aria-expanded', 'true');
+    host.classList.add('is-open');
+  };
+
+  [...select.options].forEach(option => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = 'custom-select-option';
+    item.dataset.value = option.value;
+    item.setAttribute('role', 'option');
+    item.textContent = option.textContent;
+    item.addEventListener('click', () => {
+      select.value = option.value;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      sync();
+      close();
+    });
+    menu.appendChild(item);
+  });
+
+  trigger.addEventListener('click', () => (menu.hidden ? open() : close()));
+  trigger.addEventListener('keydown', event => {
+    if (event.key === 'Escape') close();
+    if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      open();
+      menu.querySelector('.is-selected')?.scrollIntoView({ block: 'nearest' });
+    }
+  });
+  select.addEventListener('change', sync);
+  document.addEventListener('click', event => {
+    if (!host.contains(event.target)) close();
+  });
+
+  host.insertBefore(trigger, select);
+  host.appendChild(menu);
+  sync();
+}
+
 async function onPlay() {
   const a = document.getElementById('audioPlayer');
   if (!a.paused && !a.ended) {
@@ -350,6 +433,7 @@ function onDownload() {
 // pcm/sr 为待解码音频;起始和结束时间从音频播放器选区读取
 async function onDecode(pcm, sr) {
   if (!pcm || state.isProcessing) return;
+  if (state.realtimeDecode) stopRealtimeDecode(true);
   if (pcm === state.uploadedAudio?.samples && !validateRangeInputs()) return;
 
   state.isProcessing = true;
@@ -393,6 +477,65 @@ async function onDecode(pcm, sr) {
   }
 }
 
+function setRealtimeButton(active) {
+  const button = document.getElementById('realtimeDecodeBtn');
+  button.textContent = active ? '■ 停止实时解码' : '◉ 实时解码';
+  button.setAttribute('aria-label', active ? '停止实时解码' : '边播放边实时解码上传的音频');
+  button.classList.toggle('realtime-active', active);
+}
+
+async function toggleRealtimeDecode() {
+  if (state.realtimeDecode) {
+    stopRealtimeDecode(true);
+    return;
+  }
+  if (!state.uploadedAudio || !state.audioPlayer?.duration || state.isProcessing) return;
+  if (!validateRangeInputs()) return;
+
+  const { samples, sampleRate } = state.uploadedAudio;
+  const startSec = state.audioSelection.start;
+  const endSec = state.audioSelection.end;
+  const startSample = Math.floor(startSec * sampleRate);
+  const endSample = Math.min(samples.length, Math.ceil(endSec * sampleRate));
+  state.realtimeDecode = { samples, sampleRate, startSec, endSec, startSample, endSample, cursor: startSample, ended: false };
+  state.webDecoder?.reset({ ...readReceiveOptions(), dsp: { ...readDspOptions(), engine: 'mmsstv' }, emitFrames: true, renderEveryRows: 8 });
+  setRealtimeButton(true);
+  setReceiverStatus('实时搜索信号', 'active');
+  ui.setProgress('decProgress', 0);
+  ui.toast('实时解码已开始，正在同步播放音频', 'success');
+  try {
+    state.audioPlayer.seek(startSec);
+    await state.audioPlayer.play();
+  } catch (error) {
+    stopRealtimeDecode(false);
+    ui.toast('实时播放失败: ' + error.message, 'error');
+  }
+}
+
+function stopRealtimeDecode(finalize = true) {
+  const realtime = state.realtimeDecode;
+  if (!realtime) return;
+  state.realtimeDecode = null;
+  if (finalize && !realtime.ended) {
+    realtime.ended = true;
+    try { state.webDecoder?.end(); } catch (error) { console.warn('Realtime decoder:', error); }
+  }
+  if (state.audioPlayer?.isPlaying) state.audioPlayer.pause();
+  setRealtimeButton(false);
+}
+
+function handlePlaybackChange({ time, isPlaying }) {
+  const realtime = state.realtimeDecode;
+  if (!realtime) return;
+  const elapsed = Math.max(0, Math.min(realtime.endSec - realtime.startSec, time - realtime.startSec));
+  const target = Math.min(realtime.endSample, realtime.startSample + Math.floor(elapsed * realtime.sampleRate));
+  if (target > realtime.cursor) {
+    state.webDecoder?.push(realtime.samples.subarray(realtime.cursor, target), realtime.sampleRate);
+    realtime.cursor = target;
+  }
+  if (time >= realtime.endSec - 0.02) stopRealtimeDecode(true);
+}
+
 function bindReceiverEvents(receiver) {
   receiver.addEventListener('searching', () => {
     if (state.micActive) setReceiverStatus('搜索信号');
@@ -414,6 +557,10 @@ function bindReceiverEvents(receiver) {
   receiver.addEventListener('frame', ({ detail }) => renderReceiverFrame(detail.result));
   receiver.addEventListener('error', ({ detail }) => {
     if (state.micActive) setReceiverStatus('等待有效信号', 'active');
+    if (state.realtimeDecode) {
+      stopRealtimeDecode(false);
+      ui.toast('实时解码失败: ' + detail.message, 'error');
+    }
     console.warn('Receiver:', detail.message);
   });
 }
@@ -568,8 +715,14 @@ function onRangeInput() {
 
 function validateRangeInputs() {
   const start = Number(document.getElementById('decodeStartSec').value);
-  const end = Number(document.getElementById('decodeEndSec').value);
-  const valid = Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end <= state.audioPlayer.duration && start < end;
+  let end = Number(document.getElementById('decodeEndSec').value);
+  const duration = state.audioPlayer.duration;
+  // 输入框显示一位小数，允许四舍五入后最多产生 0.05s 的误差。
+  if (Number.isFinite(end) && end > duration && end - duration <= 0.051) {
+    end = duration;
+    document.getElementById('decodeEndSec').value = end.toFixed(1);
+  }
+  const valid = Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end <= duration && start < end;
   setRangeValidity(valid);
   return valid;
 }
@@ -617,6 +770,7 @@ async function onAudioFile(file) {
     ui.toast('解码音频文件中…');
     const { sampleRate, samples, format } = await decodeAudioFile(file);
     if (loadId !== state.audioLoadId) return;
+    if (state.realtimeDecode) stopRealtimeDecode(false);
     state.uploadedAudio = { sampleRate, samples, format };
 
     // 加载播放器会先显示时间轴，使两个 canvas 都能取得正确尺寸。
@@ -624,11 +778,15 @@ async function onAudioFile(file) {
     renderSpectrum(samples, sampleRate);
 
     document.getElementById('decodeUploadedBtn').disabled = false;
+    document.getElementById('realtimeDecodeBtn').disabled = !state.webDecoder;
     const dur = (samples.length / sampleRate).toFixed(1);
     document.getElementById('decodeStartSec').disabled = false;
     document.getElementById('decodeEndSec').disabled = false;
-    document.getElementById('decodeStartSec').max = String(samples.length / sampleRate);
-    document.getElementById('decodeEndSec').max = String(samples.length / sampleRate);
+    const durationSeconds = samples.length / sampleRate;
+    document.getElementById('decodeStartSec').max = String(durationSeconds);
+    document.getElementById('decodeEndSec').max = String(durationSeconds);
+    // 显式同步新音频的完整选区，避免旧文件输入值在异步解码后残留。
+    syncRangeInputs(state.audioPlayer.getSelectionTime());
     document.getElementById('audioMeta').textContent =
       `${format} · ${sampleRate}Hz · ${dur}s`;
     ui.toast(`${file.name || '音频'} 已加载(${format}, ${sampleRate}Hz, ${dur}s)`, 'success');

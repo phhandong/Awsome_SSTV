@@ -45,6 +45,7 @@ export class AudioPlayer {
     this.dragStartRight = 0;
 
     this.onSelectionChange = options.onSelectionChange || (() => {});
+    this.onPlaybackChange = options.onPlaybackChange || (() => {});
 
     this.init();
     console.log('AudioPlayer 初始化完成');
@@ -122,7 +123,7 @@ export class AudioPlayer {
     this.drawWaveform();
 
     // 更新时长显示
-    this.durationEl.textContent = this.formatTime(this.duration);
+    this.durationEl.textContent = this.formatTime(this.duration, 1);
 
     // 新音频不继承上一段音频的选区或播放位置。
     this.resetSelection();
@@ -345,6 +346,7 @@ export class AudioPlayer {
     const progress = this.duration > 0 ? safeTime / this.duration : 0;
     this.playhead.style.left = (progress * 100) + '%';
     this.currentTimeEl.textContent = this.formatTime(safeTime);
+    this.onPlaybackChange({ time: safeTime, duration: this.duration, isPlaying: this.isPlaying });
   }
 
   updateLoop() {
@@ -363,10 +365,16 @@ export class AudioPlayer {
     }
   }
 
-  formatTime(seconds) {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  formatTime(seconds, precision = 0) {
+    const rounded = precision > 0
+      ? Math.round(Math.max(0, seconds) * 10 ** precision) / 10 ** precision
+      : Math.floor(Math.max(0, seconds));
+    const mins = Math.floor(rounded / 60);
+    const secs = rounded - mins * 60;
+    const formatted = precision > 0
+      ? secs.toFixed(precision).padStart(precision === 1 ? 4 : precision + 3, '0')
+      : String(Math.floor(secs)).padStart(2, '0');
+    return `${mins}:${formatted}`;
   }
 
   destroy() {

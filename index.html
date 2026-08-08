@@ -35,7 +35,6 @@
       <span class="logo" role="img" aria-label="Radio antenna">📡</span>
       <div>
         <h1>Awesome SSTV</h1>
-        <p class="tagline">浏览器内 SSTV 编解码 · 纯静态 · 可部署 GitHub Pages</p>
       </div>
     </div>
     <div class="topbar-actions">
@@ -168,9 +167,10 @@
         </label>
       </div>
 
-      <div class="btn-row">
+      <div class="btn-row decode-actions">
         <button id="decodeBtn" class="btn primary" disabled aria-label="解码生成的音频">▶ 解码</button>
         <button id="decodeUploadedBtn" class="btn" disabled aria-label="解码上传的音频">解码上传的音频</button>
+        <button id="realtimeDecodeBtn" class="btn accent" disabled aria-label="边播放边实时解码上传的音频">◉ 实时解码</button>
       </div>
       <div class="progress" id="decProgress" hidden role="progressbar" aria-label="解码进度">
         <div class="bar"></div>
@@ -180,10 +180,12 @@
         <div class="result-heading">
           <div class="label">解码结果 <span id="resultMeta" class="meta" role="status" aria-live="polite"></span></div>
           <div class="image-export-tools">
-            <select id="imageFormat" aria-label="图片保存格式" title="图片保存格式">
-              <option value="png">PNG</option>
-              <option value="bmp">BMP</option>
-            </select>
+            <label class="format-select-wrap" title="图片保存格式">
+              <select id="imageFormat" aria-label="图片保存格式">
+                <option value="png">PNG</option>
+                <option value="bmp">BMP</option>
+              </select>
+            </label>
             <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片">
               <span class="image-save-icon" aria-hidden="true">💾</span>
             </button>
@@ -211,12 +213,25 @@
   </section>
 
   <footer role="contentinfo">
-    <p><strong>LGPL-3.0-or-later</strong> · MMSSTV 第三方声明和源码参考 · 应用代码与第三方 LGPL 组件保持 MIT/LGPL 许可证边界</p>
-    <nav class="license-links" aria-label="开源协议与项目链接">
-      <a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
-      <a href="./LICENSES/LGPL-3.0-or-later.txt" target="_blank" rel="noopener noreferrer">LGPL-3.0-or-later</a>
-      <a href="./LICENSES/MMSSTV-NOTICE.md" target="_blank" rel="noopener noreferrer">MMSSTV 参考声明</a>
-    </nav>
+    <div class="footer-inner">
+      <div class="footer-identity">
+        <span class="footer-signal" aria-hidden="true"></span>
+        <strong>Awesome SSTV</strong>
+        <span class="footer-license">LGPL-3.0-or-later</span>
+      </div>
+      <p class="footer-credit">
+        致谢 JE3HHT、JA7UDE 对
+        <a href="https://hamsoft.ca/pages/mmsstv.php" target="_blank" rel="noopener noreferrer">MMSSTV</a>
+        的贡献，以及 N5AC 对
+        <a href="https://github.com/n5ac/mmsstv" target="_blank" rel="noopener noreferrer">开源仓库</a>
+        的持续维护。
+      </p>
+      <nav class="footer-links" aria-label="开源协议与项目链接">
+        <a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+        <a href="./LICENSES/LGPL-3.0-or-later.txt" target="_blank" rel="noopener noreferrer">开源许可证</a>
+        <a href="./LICENSES/MMSSTV-NOTICE.md" target="_blank" rel="noopener noreferrer">MMSSTV 参考声明</a>
+      </nav>
+    </div>
   </footer>
 
   <div id="toast" class="toast" hidden role="alert" aria-live="assertive"></div>
