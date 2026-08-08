@@ -5,10 +5,11 @@ import { encode } from './encoder.js';
 import { decode } from './decoder.js';
 import { encodeWAV, decodeWAV } from './wav.js';
 import { decodeAudioFile, sliceFromStart } from './audiodecode.js';
-import { magnitudeSpectrum, drawSpectrumRow } from './fft.js';
+import { magnitudeSpectrum, drawSpectrumColumn } from './fft.js';
 import { AudioPlayer } from './audioPlayer.js';
 import { WebSSTVDecoder } from './web-receiver.js';
 import * as ui from './ui.js';
+import { canvasBlob } from './image-export.js';
 
 const state = {
   mode: null,
@@ -19,9 +20,11 @@ const state = {
   audioUrl: null,
   isProcessing: false,   // 防止重复处理
   audioPlayer: null,     // 交互式音频播放器
+  audioLoadId: 0,
   audioSelection: { start: 0, end: 0 }, // 选中的音频区域
   webDecoder: null,
   micActive: false,
+  decodedResult: null,
 };
 
 const FFT_SIZE = 512;
@@ -29,13 +32,18 @@ const FFT_SIZE = 512;
 function init() {
   // 模式下拉
   const sel = document.getElementById('modeSelect');
-  for (const m of listModes()) {
+  const modes = listModes().slice().sort((a, b) => {
+    const priority = { 95: 0, 8: 1, 12: 2 };
+    return (priority[a.visCode] ?? 99) - (priority[b.visCode] ?? 99);
+  });
+  for (const m of modes) {
     const opt = document.createElement('option');
     opt.value = m.visCode;
     opt.textContent = `${m.name}  ·  ${m.width}×${m.height}`;
     sel.appendChild(opt);
   }
   sel.addEventListener('change', () => selectMode(Number(sel.value)));
+  document.getElementById('autoReceive').addEventListener('change', updateReceiveModeLabel);
 
   // 主题切换
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
@@ -68,6 +76,15 @@ function init() {
     if (!state.uploadedAudio) return;
     onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
   });
+  document.getElementById('saveImageBtn').addEventListener('click', saveDecodedImage);
+  const imageFormat = document.getElementById('imageFormat');
+  try { imageFormat.value = localStorage.getItem('sstv.imageFormat') || 'png'; } catch (_) {}
+  imageFormat.addEventListener('change', () => {
+    try { localStorage.setItem('sstv.imageFormat', imageFormat.value); } catch (_) {}
+  });
+  for (const id of ['decodeStartSec', 'decodeEndSec']) {
+    document.getElementById(id).addEventListener('input', onRangeInput);
+  }
   document.getElementById('micStartBtn').addEventListener('click', startMicrophoneReceiver);
   document.getElementById('micStopBtn').addEventListener('click', stopMicrophoneReceiver);
 
@@ -83,7 +100,7 @@ function init() {
   state.audioPlayer = new AudioPlayer('audioPlayerWrapper', {
     onSelectionChange: (selection) => {
       state.audioSelection = selection;
-      console.log('选区更新:', selection);
+      syncRangeInputs(selection);
     }
   });
 
@@ -97,6 +114,7 @@ function init() {
   setupDropzoneKeyboard();
 
   selectMode(Number(sel.value));
+  updateReceiveModeLabel();
   useSampleImage();  // 默认加载示例图
 }
 
@@ -274,15 +292,15 @@ function renderSpectrumToCanvas(canvasId, pcm, sampleRate = DEFAULT_SAMPLE_RATE)
   }
   const ctx = canvas.getContext('2d');
   const w = canvas.width = canvas.clientWidth || 600;
-  const rows = 140;
-  canvas.height = rows;
-  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, rows);
+  const height = 140;
+  canvas.height = height;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, height);
   const sr = sampleRate;
   const maxStart = Math.max(0, pcm.length - FFT_SIZE);
-  for (let r = 0; r < rows; r++) {
-    const start = rows > 1 ? Math.floor(r * maxStart / (rows - 1)) : 0;
+  for (let x = 0; x < w; x++) {
+    const start = w > 1 ? Math.floor(x * maxStart / (w - 1)) : 0;
     const mag = magnitudeSpectrum(pcm, start, FFT_SIZE, sr);
-    drawSpectrumRow(ctx, mag, r, sr, FFT_SIZE, 700, 2700, w);
+    drawSpectrumColumn(ctx, mag, x, sr, FFT_SIZE, 700, 2700, height);
   }
 }
 
@@ -332,6 +350,7 @@ function onDownload() {
 // pcm/sr 为待解码音频;起始和结束时间从音频播放器选区读取
 async function onDecode(pcm, sr) {
   if (!pcm || state.isProcessing) return;
+  if (pcm === state.uploadedAudio?.samples && !validateRangeInputs()) return;
 
   state.isProcessing = true;
   const decodeBtn = document.getElementById('decodeBtn');
@@ -357,9 +376,10 @@ async function onDecode(pcm, sr) {
     }
 
     const dsp = { ...readDspOptions(), engine: 'mmsstv' };
+    const receive = readReceiveOptions();
     const result = state.webDecoder
-      ? await state.webDecoder.decode(work, sr, { dsp, emitFrames: true })
-      : decode(work, sr, { dsp });
+      ? await state.webDecoder.decode(work, sr, { ...receive, dsp, emitFrames: true })
+      : decode(work, sr, { ...receive, dsp });
     renderReceiverFrame(result);
     ui.setProgress('decProgress', 1);
     ui.toast(`解码完成 · ${result.mode.name}`, 'success');
@@ -382,7 +402,8 @@ function bindReceiverEvents(receiver) {
     document.getElementById('receiverLevel').style.width = `${percent}%`;
   });
   receiver.addEventListener('locked', ({ detail }) => {
-    setReceiverStatus('已锁定', 'locked');
+    const labels = { vis: 'VIS', fsk: 'FSK', sync: '同步', manual: '手动' };
+    setReceiverStatus(`已锁定 · ${labels[detail.source] || '自动'}`, 'locked');
     document.getElementById('receiverMode').textContent = detail.mode.name;
     document.getElementById('receiverRows').textContent = `0 / ${detail.mode.height}`;
   });
@@ -397,8 +418,10 @@ function bindReceiverEvents(receiver) {
   });
 }
 
-function renderReceiverFrame(result) {
+export function renderReceiverFrame(result) {
+  state.decodedResult = result;
   ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
+  document.getElementById('saveImageBtn').disabled = false;
   document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
   document.getElementById('receiverMode').textContent = result.mode.name;
   document.getElementById('receiverRows').textContent = `${result.height} / ${result.height}`;
@@ -419,7 +442,10 @@ async function startMicrophoneReceiver() {
   start.disabled = true;
   setReceiverStatus('请求权限', 'active');
   try {
-    await state.webDecoder.startMicrophone({ dsp: { ...readDspOptions(), engine: 'mmsstv' } });
+    await state.webDecoder.startMicrophone({
+      ...readReceiveOptions(),
+      dsp: { ...readDspOptions(), engine: 'mmsstv' },
+    });
     state.micActive = true;
     stop.disabled = false;
     setReceiverStatus('搜索信号', 'active');
@@ -509,6 +535,70 @@ function readDspOptions() {
   };
 }
 
+export function readReceiveOptions() {
+  return document.getElementById('autoReceive').checked
+    ? { autoSync: true }
+    : { mode: Number(document.getElementById('modeSelect').value) };
+}
+
+function updateReceiveModeLabel() {
+  const auto = document.getElementById('autoReceive').checked;
+  document.getElementById('modeSelect').title = auto
+    ? '编码模式；接收将自动识别 VIS、FSK 或同步脉冲'
+    : '编码与手动接收模式';
+}
+
+function syncRangeInputs(selection) {
+  const start = document.getElementById('decodeStartSec');
+  const end = document.getElementById('decodeEndSec');
+  if (!start || !end) return;
+  start.value = Number(selection.start || 0).toFixed(1);
+  end.value = Number(selection.end || 0).toFixed(1);
+  setRangeValidity(true);
+}
+
+function onRangeInput() {
+  if (!state.audioPlayer?.duration) return;
+  if (validateRangeInputs()) {
+    const start = Number(document.getElementById('decodeStartSec').value);
+    const end = Number(document.getElementById('decodeEndSec').value);
+    state.audioPlayer.setSelectionTime(start, end);
+  }
+}
+
+function validateRangeInputs() {
+  const start = Number(document.getElementById('decodeStartSec').value);
+  const end = Number(document.getElementById('decodeEndSec').value);
+  const valid = Number.isFinite(start) && Number.isFinite(end) && start >= 0 && end <= state.audioPlayer.duration && start < end;
+  setRangeValidity(valid);
+  return valid;
+}
+
+function setRangeValidity(valid) {
+  for (const id of ['decodeStartSec', 'decodeEndSec']) {
+    document.getElementById(id).setAttribute('aria-invalid', valid ? 'false' : 'true');
+  }
+  document.getElementById('rangeError').hidden = valid;
+  document.getElementById('decodeUploadedBtn').disabled = !valid || !state.uploadedAudio;
+}
+
+async function saveDecodedImage() {
+  if (!state.decodedResult) return;
+  const format = document.getElementById('imageFormat').value;
+  try {
+    const blob = await canvasBlob(document.getElementById('resultCanvas'), format);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `sstv_${state.decodedResult.mode.name.replace(/\s+/g, '_')}_${Date.now()}.${format}`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    ui.toast(`图片已保存为 ${format.toUpperCase()}`, 'success');
+  } catch (error) {
+    ui.toast(`图片保存失败: ${error.message}`, 'error');
+  }
+}
+
 function formatDecodeMeta(result) {
   const enabled = ['AFC', 'LMS', 'BPF'].filter(name => result.dsp?.[name.toLowerCase()]);
   let dspText = enabled.length ? enabled.join('+') : 'DSP 关闭';
@@ -522,19 +612,23 @@ function formatDecodeMeta(result) {
 
 // ---- 音频上传(WAV / MP3 等)----
 async function onAudioFile(file) {
+  const loadId = ++state.audioLoadId;
   try {
     ui.toast('解码音频文件中…');
     const { sampleRate, samples, format } = await decodeAudioFile(file);
+    if (loadId !== state.audioLoadId) return;
     state.uploadedAudio = { sampleRate, samples, format };
 
-    // 先渲染频谱到播放器背景
-    renderSpectrum(samples, sampleRate);
-
-    // 然后加载到交互式播放器（会在频谱上叠加波形）
+    // 加载播放器会先显示时间轴，使两个 canvas 都能取得正确尺寸。
     await state.audioPlayer.loadAudio(samples, sampleRate);
+    renderSpectrum(samples, sampleRate);
 
     document.getElementById('decodeUploadedBtn').disabled = false;
     const dur = (samples.length / sampleRate).toFixed(1);
+    document.getElementById('decodeStartSec').disabled = false;
+    document.getElementById('decodeEndSec').disabled = false;
+    document.getElementById('decodeStartSec').max = String(samples.length / sampleRate);
+    document.getElementById('decodeEndSec').max = String(samples.length / sampleRate);
     document.getElementById('audioMeta').textContent =
       `${format} · ${sampleRate}Hz · ${dur}s`;
     ui.toast(`${file.name || '音频'} 已加载(${format}, ${sampleRate}Hz, ${dur}s)`, 'success');

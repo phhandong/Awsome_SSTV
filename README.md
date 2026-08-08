@@ -9,6 +9,7 @@
 - 🎨 **生成器**:选择图片 + 模式,合成 SSTV 测试音频,可播放 / 下载 WAV
 - 📡 **解码器**:上传 **WAV 或 MP3** 文件,解码出图像;支持频谱瀑布图可视化(700–2700 Hz)
 - 🎙️ **实时接收**:在 HTTPS 或 localhost 下使用麦克风，AudioWorklet 采集、Worker 解码并逐行更新图像
+- 📡 **无 VIS 启动**:自动比较连续同步脉冲的行周期识别模式，也可手动指定模式从信号中途开始接收
 - ⏱️ **起始时间偏移**:可设置从音频的第几秒开始解码(跳过前导噪声 / 选取特定帧)
 - 🎛️ **DSP 开关**:可独立启用/关闭 AFC 自动频偏校正、CLMS/NLMS 自适应线增强和 BPF 带通滤波
 - ⟲ **自测闭环**:一键生成 → 解码 → 原图对照 + PSNR 指标
@@ -43,6 +44,15 @@ receiver.on('frame', event => render(event.result.pixels));
 receiver.push(pcmChunk, inputSampleRate);
 receiver.end();
 ```
+
+自动接收默认依次尝试 VIS、窄带 FSK 和同步脉冲周期。已知模式时可以绕过头部：
+
+```js
+const receiver = new SSTVReceiver({ mode: 8 }); // Robot 36
+// 同步 decode(samples, sampleRate, { mode: 8 }) 也支持手动模式
+```
+
+手动模式会从第一条可用的完整同步行开始构图。AVT 90 没有可用于锁定的行同步，手动模式从输入 PCM 起点开始。
 
 文件上传和麦克风输入共用该增量接收器。`decode()` 继续提供同步兼容接口；MMSSTV CPLL/FSK/VIS 负责接收锁定，完整录音的像素积分使用零相位频率轨以保留短像素边界。
 
@@ -83,7 +93,8 @@ Awsome_SSTV/
 │   ├── vis.js              # VIS 头编解码
 │   ├── wav.js              # 纯 JS WAV 读写(44100/16bit/mono + 多格式解码)
 │   ├── encoder.js          # 生成器:图片→VIS→行扫描→PCM(相位连续调频)
-│   ├── decoder.js          # 解码器:PCM→VIS→同步→逐行重建→YUV合并
+│   ├── decoder.js          # 解码器:PCM→VIS/FSK/同步→逐行重建→YUV合并
+│   ├── sync-acquisition.js  # MMSSTV 同步周期自动识别与手动模式解析
 │   ├── demod.js            # FM 解调(解析信号瞬时频率)+ 同步搜索 + AutoSlant
 │   ├── audiodecode.js      # 统一音频解码:WAV(纯JS)+ MP3(Web Audio)+ 起始时间切片
 │   ├── fft.js              # 频谱瀑布图
@@ -98,7 +109,7 @@ Awsome_SSTV/
 
 **生成器**:像素亮度 0–255 线性映射到 1500–2300 Hz(黑→白)。逐行按模式段序列合成,SYNC 1200Hz / PORCH 1500Hz / SCAN 调频。相位累加器保证段边界无爆音。Robot 系按奇偶场顺序输出,YUV 4:2:2。
 
-**解码器**:可选 BPF → 可选 CLMS/NLMS 自适应线增强 → 双极性过零测频 → 可选 AFC(以 VIS 1900Hz 为基准校正频偏)→ VIS 识别 → 1200Hz 同步脉冲搜索 → 按模式段对齐每行首个 SCAN → 逐像素采样重建。三个 DSP 模块可在界面独立开关，默认 AFC 关、LMS 关、BPF 开。
+**解码器**:可选 BPF → 可选 CLMS/NLMS 自适应线增强 → 双极性过零测频 → 可选 AFC(以 VIS 1900Hz 为基准校正频偏)→ VIS/FSK 识别；头部缺失时按 MMSSTV 的连续 1200/1900Hz 同步脉冲间隔匹配模式行周期，也可使用手动模式 → 按模式段对齐每行首个 SCAN → 逐像素采样重建。三个 DSP 模块可在界面独立开关，默认 AFC 关、LMS 关、BPF 开。
 
 **音频输入**:WAV 走纯 JS 解析(`wav.js`,无浏览器 API 依赖);MP3 等其他格式走 Web Audio API 的 `decodeAudioData`(`audiodecode.js`),统一输出单声道 PCM,再由 `demod.resample` 重采样到 44100Hz。**起始时间偏移**:在解码前按 `秒 × 采样率` 截取 PCM,可跳过前导静音/噪声或选取录音中的特定 SSTV 帧。
 
@@ -127,7 +138,7 @@ MODES[95] = { visCode:95, name:'PD120', width:640, height:480, ... };
 ```bash
 node verify.js     # 核心:8 模式闭环 PSNR
 node verify-dsp.js # DSP:AFC/LMS/BPF 算法与开关
-node verify-stream.js # 流式重采样、CPLL、标准/窄带增量接收
+node verify-stream.js # 流式重采样、CPLL、VIS/FSK、同步自动启动、手动启动
 node verify-audio.js # WAV:PCM/float/边界校验
 node uitest.js     # UI:装配与模式填充(jsdom)
 ```

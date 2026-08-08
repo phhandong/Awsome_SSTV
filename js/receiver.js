@@ -7,6 +7,7 @@ import { demodulate } from './demod.js';
 import { getMode } from './modes.js';
 import { decodeNarrowFSKHeader, decodeVISHeader } from './vis.js';
 import { MMSSTV_SAMPLE_RATE, StreamingResampler } from './mmsstv-dsp.js';
+import { detectSyncMode, resolveReceiveMode } from './sync-acquisition.js';
 
 function concatChunks(chunks, length) {
   const out = new Float32Array(length);
@@ -61,12 +62,19 @@ export class SSTVReceiver {
 
     if (!this.mode && this.length - this.lastProbeLength >= this.resampler.outputRate / 4) {
       this.lastProbeLength = this.length;
-      this.probeHeader();
+      this.probeAcquisition();
     }
     if (this.mode) this.reportRows();
   }
 
-  probeHeader() {
+  probeAcquisition() {
+    const forcedMode = resolveReceiveMode(this.options.mode);
+    if (forcedMode) {
+      this.lock(forcedMode, {
+        source: 'manual', mode: forcedMode, sampleOffset: Math.max(0, this.options.startSample || 0),
+      });
+      return;
+    }
     const maxProbe = Math.min(this.length, this.resampler.outputRate * 7);
     if (maxProbe < this.resampler.outputRate / 2) return;
     const pcm = concatChunks(this.chunks, this.length).subarray(0, maxProbe);
@@ -78,14 +86,26 @@ export class SSTVReceiver {
       afc: dsp.afc === true,
       engine: dsp.engine || 'mmsstv',
     });
-    const header = decodeVISHeader(freq, this.resampler.outputRate, 0)
+    let header = decodeVISHeader(freq, this.resampler.outputRate, 0)
       || decodeNarrowFSKHeader(freq, this.resampler.outputRate, 0);
-    if (!header) return;
-    const mode = getMode(header.visCode7);
+    let mode = header ? getMode(header.visCode7) : null;
+    if (mode) {
+      header = { ...header, source: header.extended || mode.narrow ? 'fsk' : 'vis', mode };
+    } else if (this.options.autoSync !== false) {
+      header = detectSyncMode(freq, this.resampler.outputRate, this.options.syncOptions);
+      mode = header?.mode;
+    }
     if (!mode) return;
+    this.lock(mode, header);
+  }
+
+  lock(mode, header) {
     this.header = header;
     this.mode = mode;
-    this.emit('locked', { status: 'locked', mode, header, rows: 0 });
+    this.emit('locked', {
+      status: 'locked', mode, header, source: header.source,
+      confidence: header.confidence ?? 1, rows: 0,
+    });
   }
 
   reportRows() {
@@ -109,6 +129,7 @@ export class SSTVReceiver {
   renderPartial() {
     try {
       const result = decode(concatChunks(this.chunks, this.length), this.resampler.outputRate, {
+        ...this.options,
         dsp: this.options.dsp,
       });
       this.emit('frame', { result, partial: this.rows < this.mode.height, rows: this.rows });
@@ -122,6 +143,7 @@ export class SSTVReceiver {
     this.ended = true;
     try {
       const result = decode(concatChunks(this.chunks, this.length), this.resampler.outputRate, {
+        ...this.options,
         dsp: this.options.dsp,
         onProgress: this.options.onProgress,
       });

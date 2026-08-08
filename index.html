@@ -43,6 +43,10 @@
         <span>模式</span>
         <select id="modeSelect" aria-label="选择 SSTV 模式"></select>
       </label>
+      <label class="auto-receive" title="自动尝试 VIS、FSK 和同步脉冲识别模式">
+        <input type="checkbox" id="autoReceive" checked aria-label="启用自动接收模式">
+        <span>自动接收</span>
+      </label>
       <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色/暗色主题">🌙</button>
     </div>
   </header>
@@ -135,9 +139,13 @@
           </div>
         </div>
         <div class="audio-selection-info">
-          <span>选中区域: <strong id="audioSelectionStart">0.0</strong>s ~ <strong id="audioSelectionEnd">0.0</strong>s</span>
+          <span class="range-inputs">
+            <label>开始 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+            <label>结束 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+          </span>
           <button id="resetSelectionBtn" class="btn-link">重置选区</button>
         </div>
+        <p id="rangeError" class="range-error" role="alert" hidden>范围必须满足 0 <= 开始 < 结束 <= 音频总时长。</p>
       </div>
 
       <div class="decode-options">
@@ -169,7 +177,18 @@
       </div>
 
       <div class="result-wrap">
-        <div class="label">解码结果 <span id="resultMeta" class="meta" role="status" aria-live="polite"></span></div>
+        <div class="result-heading">
+          <div class="label">解码结果 <span id="resultMeta" class="meta" role="status" aria-live="polite"></span></div>
+          <div class="image-export-tools">
+            <select id="imageFormat" aria-label="图片保存格式" title="图片保存格式">
+              <option value="png">PNG</option>
+              <option value="bmp">BMP</option>
+            </select>
+            <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片">
+              <span class="image-save-icon" aria-hidden="true">💾</span>
+            </button>
+          </div>
+        </div>
         <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
       </div>
     </section>
@@ -192,8 +211,12 @@
   </section>
 
   <footer role="contentinfo">
-    <p>基于 <strong>MMSSTV v1.06, JE3HHT</strong> 重构 · 协议参数来自公开 SSTV 规范 · 纯前端实现,无后端</p>
-    <a class="deerflow-signature" href="https://deerflow.tech" target="_blank" rel="noopener noreferrer">Created By Deerflow</a>
+    <p><strong>LGPL-3.0-or-later</strong> · MMSSTV 第三方声明和源码参考 · 应用代码与第三方 LGPL 组件保持 MIT/LGPL 许可证边界</p>
+    <nav class="license-links" aria-label="开源协议与项目链接">
+      <a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
+      <a href="./LICENSES/LGPL-3.0-or-later.txt" target="_blank" rel="noopener noreferrer">LGPL-3.0-or-later</a>
+      <a href="./LICENSES/MMSSTV-NOTICE.md" target="_blank" rel="noopener noreferrer">MMSSTV 参考声明</a>
+    </nav>
   </footer>
 
   <div id="toast" class="toast" hidden role="alert" aria-live="assertive"></div>

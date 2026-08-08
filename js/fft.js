@@ -52,23 +52,24 @@ export function magnitudeSpectrum(samples, start, fftSize, sr) {
   return mag;
 }
 
-// 把幅度谱的一行绘制到 canvas(瀑布图:纵轴时间向下,横轴频率)
-// specCtx: 2d context; row: 纵向像素行; fLow/fHigh: 显示频率范围
-export function drawSpectrumRow(specCtx, mag, row, sr, fftSize, fLow, fHigh, width) {
-  const imgData = specCtx.createImageData(width, 1);
-  for (let x = 0; x < width; x++) {
-    const f = fLow + (x / width) * (fHigh - fLow);
+// 把一个时间片绘制成频谱图的一列：横轴时间向右，纵轴频率由低到高。
+// 画布坐标向下递增，所以高频在上、低频在下。
+export function drawSpectrumColumn(specCtx, mag, column, sr, fftSize, fLow, fHigh, height) {
+  const imgData = specCtx.createImageData(1, height);
+  for (let y = 0; y < height; y++) {
+    const ratio = height > 1 ? 1 - y / (height - 1) : 0;
+    const f = fLow + ratio * (fHigh - fLow);
     const bin = Math.round(f * fftSize / sr);
     const m = bin < mag.length ? mag[bin] : 0;
     // 对数缩放 + 颜色映射(蓝→青→绿→黄→红)
     const v = Math.min(1, Math.log10(1 + m * 1e4) / 4);
     const [r, g, b] = heatColor(v);
-    imgData.data[x * 4] = r;
-    imgData.data[x * 4 + 1] = g;
-    imgData.data[x * 4 + 2] = b;
-    imgData.data[x * 4 + 3] = 255;
+    imgData.data[y * 4] = r;
+    imgData.data[y * 4 + 1] = g;
+    imgData.data[y * 4 + 2] = b;
+    imgData.data[y * 4 + 3] = 255;
   }
-  specCtx.putImageData(imgData, 0, row);
+  specCtx.putImageData(imgData, column, 0);
 }
 
 function heatColor(v) {

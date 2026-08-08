@@ -12,6 +12,7 @@
 import { DEFAULT_SAMPLE_RATE, SegType, ColorSpace, getMode, freqToPixel, FREQ } from './modes.js';
 import { resample, demodulate, applyAFC, findSyncPulses, autoSlant } from './demod.js';
 import { decodeNarrowFSKHeader, decodeVISHeader } from './vis.js';
+import { detectSyncMode, resolveReceiveMode } from './sync-acquisition.js';
 
 /**
  * @param {Float32Array} samples  PCM
@@ -45,11 +46,24 @@ export function decode(samples, sampleRate, opts = {}) {
     dspState.afcLocked = correction.locked;
   }
 
-  // 3. VIS 识别
-  const vis = decodeVISHeader(freq, sr, 0) || decodeNarrowFSKHeader(freq, sr, 0);
-  if (!vis) throw new Error('未检测到 VIS 头(可能是非 SSTV 信号或信噪比过低)');
-  const mode = getMode(vis.visCode7);
-  if (!mode) throw new Error('未知 VIS 码: ' + vis.visCode7);
+  // 3. Acquisition: a selected mode bypasses VIS. In automatic mode, use
+  // MMSSTV's repeated sync-interval start when VIS/FSK cannot be decoded.
+  const forcedMode = resolveReceiveMode(opts.mode);
+  const vis = forcedMode ? null : (decodeVISHeader(freq, sr, 0) || decodeNarrowFSKHeader(freq, sr, 0));
+  let acquisition;
+  let mode;
+  if (forcedMode) {
+    mode = forcedMode;
+    acquisition = { source: 'manual', mode, sampleOffset: Math.max(0, opts.startSample || 0) };
+  } else if (vis) {
+    mode = getMode(vis.visCode7);
+    if (!mode) throw new Error('未知 VIS 码: ' + vis.visCode7);
+    acquisition = { ...vis, source: vis.extended || mode.narrow ? 'fsk' : 'vis', mode };
+  } else if (opts.autoSync !== false) {
+    acquisition = detectSyncMode(freq, sr, opts.syncOptions);
+    mode = acquisition?.mode;
+  }
+  if (!mode) throw new Error('未检测到 VIS/FSK 头或可识别的同步脉冲周期');
   if (mode.narrow && dspState.engine === 'mmsstv') {
     freq = demodulate(pcm, sr, {
       ...dspState,
@@ -81,7 +95,7 @@ export function decode(samples, sampleRate, opts = {}) {
   // autoSlant 使用的可靠同步脉冲。
   if (mode.noSync) {
     const firstScanStarts = new Array(height);
-    const start = vis.sampleOffset + Math.floor((mode.firstScanAfterVisMs || 0) * sr / 1000);
+    const start = acquisition.sampleOffset + Math.floor((mode.firstScanAfterVisMs || 0) * sr / 1000);
     // 本地 44.1kHz 编码器逐段向下取整；其他采样率的输入经过重采样后，
     // 应保持理论行周期。两者混用会在 AVT 的整幅图上积累明显水平漂移。
     const lineSamples = sampleRate === sr
@@ -92,7 +106,7 @@ export function decode(samples, sampleRate, opts = {}) {
     for (let y = 0; y < height; y++) firstScanStarts[y] = Math.round(start + y * lineSamples);
     const pixels = new Uint8ClampedArray(width * height * 4);
     decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
-    return { width, height, pixels, mode, dsp: dspState };
+    return { width, height, pixels, mode, dsp: dspState, acquisition };
   }
 
   // 4. 同步脉冲搜索 + 斜率校正
@@ -102,10 +116,13 @@ export function decode(samples, sampleRate, opts = {}) {
   const lineCount = mode.dataLines || height;
   const need = mode.interlace ? height : (mode.syncAtLineStart ? lineCount - 1 : lineCount);
   let rawPulses = findSyncPulses(freq, sr, 4.0, 0.25, mode.syncFreq ?? FREQ.SYNC);
-  let imgPulses = rawPulses.filter(p => p > vis.sampleOffset).sort((a, b) => a - b);
+  const afterAcquisition = p => acquisition.source === 'vis' || acquisition.source === 'fsk'
+    ? p > acquisition.sampleOffset
+    : p >= acquisition.sampleOffset;
+  let imgPulses = rawPulses.filter(afterAcquisition).sort((a, b) => a - b);
   if (imgPulses.length < need * 0.9) {
     imgPulses = findSyncPulses(freq, sr, 4.0, 0.12, mode.syncFreq ?? FREQ.SYNC)
-      .filter(p => p > vis.sampleOffset).sort((a, b) => a - b);
+      .filter(afterAcquisition).sort((a, b) => a - b);
   }
   if (imgPulses.length === 0) throw new Error('未找到同步脉冲');
   imgPulses = filterFalsePulses(imgPulses, mode, sr);
@@ -120,7 +137,13 @@ export function decode(samples, sampleRate, opts = {}) {
   const offsetSamples = Math.floor(mode.syncToFirstScanMs * sr / 1000);
   const firstScanStarts = new Array(lineCount).fill(null);
 
-  if (mode.interlace) {
+  if (acquisition.source === 'sync' || acquisition.source === 'manual') {
+    // Without a header, the first detected pulse anchors the first complete
+    // row. End-of-line sync modes therefore start at the following row.
+    for (let y = 0; y < lineCount; y++) {
+      firstScanStarts[y] = lineStarts[y] !== undefined ? lineStarts[y] + offsetSamples : null;
+    }
+  } else if (mode.interlace) {
     // Robot 36/72:实测真实 MMSSTV 信号为逐行顺序(脉冲 i → 图像行 i+1),
     // 非奇偶分场。行 0 SYNC 紧跟 VIS(imageStart),findSyncPulses 会把 VIS stop bit
     // (1200Hz@30ms)与行0 SYNC 合并检出,导致首个图像脉冲实为行1。故行0 起点用 imageStart,
@@ -129,13 +152,13 @@ export function decode(samples, sampleRate, opts = {}) {
     // 用 PLL 跟踪逐行起点(鲁棒于 SYNC 漏检/假阳性):行0=imageStart,每行期望 pos+=T,
     // 在期望位置±窗口找最近脉冲,严格容差(<15ms)内才采纳并修正相位,否则自由运行(漏检)。
     // T 仅在前段(信号好)用 EMA 锁定,避免后段坏脉冲污染周期估计。
-    const lineSyncPos = trackLineStartsPLL(lineStarts, vis.sampleOffset, mode, sr, freq);
+    const lineSyncPos = trackLineStartsPLL(lineStarts, acquisition.sampleOffset, mode, sr, freq);
     for (let y = 0; y < height; y++) {
       firstScanStarts[y] = (lineSyncPos[y] != null) ? lineSyncPos[y] + offsetSamples : null;
     }
   } else if (mode.syncAtLineStart) {
     // Martin:行 0 SYNC 紧跟 VIS(imageStart),脉冲[0] 是行 1 SYNC,脉冲[y-1] 是行 y SYNC
-    firstScanStarts[0] = vis.sampleOffset + offsetSamples;
+    firstScanStarts[0] = acquisition.sampleOffset + offsetSamples;
     for (let y = 1; y < lineCount; y++) {
       firstScanStarts[y] = (lineStarts[y - 1] !== undefined) ? lineStarts[y - 1] + offsetSamples : null;
     }
@@ -143,7 +166,7 @@ export function decode(samples, sampleRate, opts = {}) {
     // Scottie/SC2/BW:脉冲位于行尾。首行及后续行到第一个 SCAN 的偏移
     // 因族而异，不能再写死 Scottie 1 的 9.0ms + 1.522ms。
     const firstOffset = Math.floor((mode.firstScanAfterVisMs ?? 9.0 + 1.522) * sr / 1000);
-    firstScanStarts[0] = vis.sampleOffset + firstOffset;
+    firstScanStarts[0] = acquisition.sampleOffset + firstOffset;
     for (let y = 1; y < lineCount; y++) {
       const p = lineStarts[y - 1];
       firstScanStarts[y] = (p !== undefined) ? p + offsetSamples : null;
@@ -162,7 +185,7 @@ export function decode(samples, sampleRate, opts = {}) {
     decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts);
   }
 
-  return { width, height, pixels, mode, dsp: dspState };
+  return { width, height, pixels, mode, dsp: dspState, acquisition };
 }
 
 // SCAN 段开头预留 guard(毫秒):避开段边界的瞬态(前接 porch/SYNC 的频率过渡,

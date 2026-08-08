@@ -6,17 +6,16 @@ export class AudioPlayer {
 
     this.container = document.getElementById(containerId);
     this.waveformCanvas = document.getElementById('audioWaveform');
+    this.timeline = this.waveformCanvas?.closest('.audio-timeline-container');
     this.playPauseBtn = document.getElementById('audioPlayPauseBtn');
     this.playhead = document.getElementById('audioPlayhead');
     this.selection = document.getElementById('audioSelection');
     this.currentTimeEl = document.getElementById('audioCurrentTime');
     this.durationEl = document.getElementById('audioDuration');
-    this.selectionStartEl = document.getElementById('audioSelectionStart');
-    this.selectionEndEl = document.getElementById('audioSelectionEnd');
     this.resetBtn = document.getElementById('resetSelectionBtn');
 
     // 检查所有元素是否存在
-    if (!this.container || !this.waveformCanvas || !this.playPauseBtn) {
+    if (!this.container || !this.timeline || !this.waveformCanvas || !this.playPauseBtn) {
       console.error('AudioPlayer 初始化失败: 缺少必需的 DOM 元素');
       console.log('container:', this.container);
       console.log('waveformCanvas:', this.waveformCanvas);
@@ -40,7 +39,7 @@ export class AudioPlayer {
 
     // 拖动状态
     this.isDragging = false;
-    this.dragType = null; // 'start', 'end', 'move'
+    this.dragType = null; // 'start' or 'end'
     this.dragStartX = 0;
     this.dragStartLeft = 0;
     this.dragStartRight = 0;
@@ -72,10 +71,12 @@ export class AudioPlayer {
     let isDraggingPlayhead = false;
 
     // 点击或拖动时间轴
-    this.waveformCanvas.addEventListener('mousedown', (e) => {
+    this.timeline.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || e.target.classList.contains('audio-selection-handle')) return;
       // 不干扰选区拖动
       if (this.isDragging) return;
 
+      e.preventDefault();
       isDraggingPlayhead = true;
       this.updatePlayheadFromMouse(e);
     });
@@ -100,6 +101,7 @@ export class AudioPlayer {
   }
 
   async loadAudio(samples, sampleRate) {
+    this.stop();
     this.samples = samples;
     this.sampleRate = sampleRate;
     this.duration = samples.length / sampleRate;
@@ -113,26 +115,25 @@ export class AudioPlayer {
     this.audioBuffer = this.audioContext.createBuffer(1, samples.length, sampleRate);
     this.audioBuffer.copyToChannel(samples, 0);
 
+    // 先显示播放器，确保 canvas 能取得当前布局尺寸。
+    this.container.hidden = false;
+
     // 绘制波形
     this.drawWaveform();
 
     // 更新时长显示
     this.durationEl.textContent = this.formatTime(this.duration);
 
-    // 重置选区
+    // 新音频不继承上一段音频的选区或播放位置。
     this.resetSelection();
+    this.updatePlaybackPosition(0);
 
-    // 显示播放器
-    this.container.hidden = false;
-
-    // 立即触发选区更新回调
-    this.onSelectionChange(this.getSelectionTime());
   }
 
   drawWaveform() {
     const canvas = this.waveformCanvas;
     const ctx = canvas.getContext('2d', { alpha: true });
-    const w = canvas.width = canvas.clientWidth;
+    const w = canvas.width = canvas.clientWidth || this.timeline?.clientWidth || 600;
     const h = canvas.height = canvas.clientHeight || 140;
 
     // 清除画布（透明）
@@ -198,18 +199,6 @@ export class AudioPlayer {
       });
     });
 
-    // 选区移动
-    this.selection.addEventListener('mousedown', (e) => {
-      if (e.target.classList.contains('audio-selection-handle')) return;
-      e.stopPropagation();
-      this.isDragging = true;
-      this.dragType = 'move';
-      this.dragStartX = e.clientX;
-      this.dragStartLeft = this.selectionStart;
-      this.dragStartRight = this.selectionEnd;
-      document.body.style.cursor = 'move';
-    });
-
     document.addEventListener('mousemove', (e) => {
       if (!this.isDragging) return;
 
@@ -220,24 +209,10 @@ export class AudioPlayer {
         this.selectionStart = Math.max(0, Math.min(this.dragStartRight - 0.01, this.dragStartLeft + delta));
       } else if (this.dragType === 'end') {
         this.selectionEnd = Math.max(this.dragStartLeft + 0.01, Math.min(1, this.dragStartRight + delta));
-      } else if (this.dragType === 'move') {
-        const width = this.dragStartRight - this.dragStartLeft;
-        let newStart = this.dragStartLeft + delta;
-        let newEnd = this.dragStartRight + delta;
-
-        if (newStart < 0) {
-          newStart = 0;
-          newEnd = width;
-        } else if (newEnd > 1) {
-          newEnd = 1;
-          newStart = 1 - width;
-        }
-
-        this.selectionStart = newStart;
-        this.selectionEnd = newEnd;
       }
 
       this.updateSelection();
+      this.onSelectionChange(this.getSelectionTime());
     });
 
     document.addEventListener('mouseup', () => {
@@ -257,8 +232,18 @@ export class AudioPlayer {
     this.selection.style.left = left + '%';
     this.selection.style.width = width + '%';
 
-    this.selectionStartEl.textContent = (this.selectionStart * this.duration).toFixed(1);
-    this.selectionEndEl.textContent = (this.selectionEnd * this.duration).toFixed(1);
+  }
+
+  setSelectionTime(start, end) {
+    if (!Number.isFinite(start) || !Number.isFinite(end) ||
+        start < 0 || start >= end || end > this.duration) {
+      return false;
+    }
+    this.selectionStart = start / this.duration;
+    this.selectionEnd = end / this.duration;
+    this.updateSelection();
+    this.onSelectionChange(this.getSelectionTime());
+    return true;
   }
 
   resetSelection() {
@@ -298,22 +283,23 @@ export class AudioPlayer {
     }
 
     // 创建新的源节点
-    this.sourceNode = this.audioContext.createBufferSource();
-    this.sourceNode.buffer = this.audioBuffer;
-    this.sourceNode.connect(this.audioContext.destination);
+    const sourceNode = this.audioContext.createBufferSource();
+    this.sourceNode = sourceNode;
+    sourceNode.buffer = this.audioBuffer;
+    sourceNode.connect(this.audioContext.destination);
 
     // 从选区开始播放
     const startTime = this.pauseTime || (this.selectionStart * this.duration);
     const duration = (this.selectionEnd * this.duration) - startTime;
 
-    this.sourceNode.start(0, startTime, duration);
+    sourceNode.start(0, startTime, duration);
     this.startTime = this.audioContext.currentTime - startTime;
     this.isPlaying = true;
     this.playPauseBtn.textContent = '⏸';
 
     // 播放结束
-    this.sourceNode.onended = () => {
-      if (this.isPlaying) {
+    sourceNode.onended = () => {
+      if (this.sourceNode === sourceNode && this.isPlaying) {
         this.stop();
       }
     };
@@ -348,9 +334,17 @@ export class AudioPlayer {
       this.pause();
     }
     this.pauseTime = Math.max(this.selectionStart * this.duration, Math.min(this.selectionEnd * this.duration, time));
+    this.updatePlaybackPosition(this.pauseTime);
     if (wasPlaying) {
       this.play();
     }
+  }
+
+  updatePlaybackPosition(time) {
+    const safeTime = Number.isFinite(time) ? Math.max(0, Math.min(this.duration, time)) : 0;
+    const progress = this.duration > 0 ? safeTime / this.duration : 0;
+    this.playhead.style.left = (progress * 100) + '%';
+    this.currentTimeEl.textContent = this.formatTime(safeTime);
   }
 
   updateLoop() {
@@ -358,22 +352,14 @@ export class AudioPlayer {
 
     if (this.isPlaying && this.audioContext) {
       const currentTime = this.audioContext.currentTime - this.startTime;
-      const progress = currentTime / this.duration;
-
-      // 更新播放头
-      this.playhead.style.left = (progress * 100) + '%';
-
-      // 更新时间显示
-      this.currentTimeEl.textContent = this.formatTime(currentTime);
+      this.updatePlaybackPosition(currentTime);
 
       // 检查是否超出选区
       if (currentTime >= this.selectionEnd * this.duration) {
         this.stop();
       }
     } else if (!this.isPlaying && this.pauseTime) {
-      const progress = this.pauseTime / this.duration;
-      this.playhead.style.left = (progress * 100) + '%';
-      this.currentTimeEl.textContent = this.formatTime(this.pauseTime);
+      this.updatePlaybackPosition(this.pauseTime);
     }
   }
 

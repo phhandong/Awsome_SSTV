@@ -2,6 +2,7 @@ import { encode } from './js/encoder.js';
 import { getMode } from './js/modes.js';
 import { MMSSTVCPLL, StreamingResampler } from './js/mmsstv-dsp.js';
 import { SSTVReceiver } from './js/receiver.js';
+import { detectSyncMode } from './js/sync-acquisition.js';
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -57,4 +58,31 @@ for (const key of [2, 0x1022d]) {
   assert(result.mode === mode, `${mode.name} stream decoded as ${result.mode.name}`);
 }
 
-console.log('Streaming checks passed: resampler continuity, CPLL tones, standard and narrow receivers');
+// MMSSTV remote start: identify a mode from sync intervals even when one
+// pulse is missing.
+const syncMode = getMode(8);
+const syncFreq = new Float32Array(Math.ceil(6 * syncMode.lineDurationMs * 11025 / 1000)).fill(1500);
+const syncPeriod = syncMode.lineDurationMs * 11025 / 1000;
+for (const line of [0, 1, 3, 4, 5]) {
+  const start = Math.round(200 + line * syncPeriod);
+  syncFreq.fill(1200, start, Math.min(syncFreq.length, start + Math.ceil(10 * 11025 / 1000)));
+}
+const syncLock = detectSyncMode(syncFreq, 11025);
+assert(syncLock?.mode === syncMode, `sync intervals detected ${syncLock?.mode?.name || 'nothing'} instead of Robot 36`);
+
+// Remove the complete VIS header and enter during the image. Automatic sync
+// start and a manually selected mode must both remain usable.
+const noVisMode = getMode(2);
+const noVisPcm = encode(image(noVisMode), noVisMode, { sampleRate: 11025 }).subarray(11025);
+for (const options of [{}, { mode: noVisMode.visCode }]) {
+  const receiver = new SSTVReceiver({ ...options, dsp: { engine: 'legacy', bpf: true }, emitFrames: false });
+  let source = null;
+  receiver.on('locked', event => { source = event.source; });
+  for (let i = 0; i < noVisPcm.length; i += 613) receiver.push(noVisPcm.subarray(i, i + 613), 11025);
+  const result = receiver.end();
+  const expectedSource = options.mode ? 'manual' : 'sync';
+  assert(source === expectedSource, `no-VIS ${expectedSource} receiver locked via ${source}`);
+  assert(result.mode === noVisMode, `no-VIS ${expectedSource} decode selected ${result.mode.name}`);
+}
+
+console.log('Streaming checks passed: resampler, CPLL, VIS/FSK, sync auto-start and manual start');

@@ -42,8 +42,8 @@ async function verifyViewport(name, viewport) {
   await page.waitForSelector('#micStartBtn');
 
   const decoded = await page.evaluate(async () => {
-    const [{ encode }, { getMode }, { WebSSTVDecoder }, ui] = await Promise.all([
-      import('./js/encoder.js'), import('./js/modes.js'), import('./js/web-receiver.js'), import('./js/ui.js'),
+    const [{ encode }, { getMode }, { WebSSTVDecoder }, ui, app] = await Promise.all([
+      import('./js/encoder.js'), import('./js/modes.js'), import('./js/web-receiver.js'), import('./js/ui.js'), import('./js/app.js'),
     ]);
     const mode = getMode(2);
     const rgba = new Uint8ClampedArray(mode.width * mode.height * 4);
@@ -57,7 +57,7 @@ async function verifyViewport(name, viewport) {
     const result = await decoder.decode(pcm, 11025, {
       dsp: { engine: 'mmsstv', bpf: true }, emitFrames: false,
     });
-    ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
+    app.renderReceiverFrame(result);
     const canvas = document.getElementById('resultCanvas');
     const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
     let sum = 0;
@@ -66,6 +66,100 @@ async function verifyViewport(name, viewport) {
     return { mode: result.mode.name, width: result.width, height: result.height, pixelSum: sum };
   });
   if (decoded.mode !== 'B/W 8' || decoded.pixelSum <= 0) throw new Error(`${name}: Worker/canvas decode failed`);
+
+  const receiveOptions = await page.evaluate(() => {
+    document.getElementById('autoReceive').checked = false;
+    document.getElementById('modeSelect').value = '12';
+    return import('./js/app.js').then(app => app.readReceiveOptions());
+  });
+  if (receiveOptions.mode !== 12 || 'autoSync' in receiveOptions) throw new Error(`${name}: manual receive did not use modeSelect`);
+  await page.evaluate(() => { document.getElementById('autoReceive').checked = true; });
+
+  for (const format of ['png', 'bmp']) {
+    await page.selectOption('#imageFormat', format);
+    const downloadPromise = page.waitForEvent('download');
+    await page.click('#saveImageBtn');
+    const download = await downloadPromise;
+    const bytes = await readFile(await download.path());
+    const signatureOk = format === 'png'
+      ? bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      : bytes.length > 54 && bytes[0] === 0x42 && bytes[1] === 0x4d && bytes.readUInt16LE(28) === 24;
+    if (!signatureOk || !download.suggestedFilename().endsWith(`.${format}`)) {
+      throw new Error(`${name}: invalid ${format.toUpperCase()} download`);
+    }
+  }
+
+  if (name === 'desktop') {
+    await page.setInputFiles('#wavInput', join(ROOT, 'asset', 'ROBOT36_test.mp3'));
+    await page.waitForFunction(() => !document.getElementById('decodeEndSec').disabled, null, { timeout: 30000 });
+    const duration = Number(await page.inputValue('#decodeEndSec'));
+    await page.fill('#decodeStartSec', '1.0');
+    await page.fill('#decodeEndSec', String(Math.max(1.1, duration - 1)));
+    const rangeSync = await page.evaluate(() => ({
+      left: parseFloat(document.getElementById('audioSelection').style.left),
+      width: parseFloat(document.getElementById('audioSelection').style.width),
+      invalid: document.getElementById('decodeStartSec').getAttribute('aria-invalid'),
+    }));
+    if (!(rangeSync.left > 0 && rangeSync.width > 0 && rangeSync.width < 100 && rangeSync.invalid === 'false')) {
+      throw new Error('desktop: numeric range did not update waveform selection');
+    }
+    await page.fill('#decodeStartSec', String(duration));
+    const invalid = await page.evaluate(() => ({
+      disabled: document.getElementById('decodeUploadedBtn').disabled,
+      errorVisible: !document.getElementById('rangeError').hidden,
+      aria: document.getElementById('decodeStartSec').getAttribute('aria-invalid'),
+    }));
+    if (!invalid.disabled || !invalid.errorVisible || invalid.aria !== 'true') throw new Error('desktop: invalid range can start decode');
+    await page.click('#resetSelectionBtn');
+    const reset = await page.evaluate(() => ({
+      start: Number(document.getElementById('decodeStartSec').value),
+      end: Number(document.getElementById('decodeEndSec').value),
+      duration: Number(document.getElementById('audioDuration').textContent.split(':')[0]) * 60 + Number(document.getElementById('audioDuration').textContent.split(':')[1]),
+      left: document.getElementById('audioSelection').style.left,
+      width: document.getElementById('audioSelection').style.width,
+    }));
+    if (reset.start !== 0 || reset.end <= 0 || reset.left !== '0%' || reset.width !== '100%') {
+      throw new Error('desktop: reset did not restore full selection');
+    }
+    const timeline = await page.locator('.audio-timeline-container').boundingBox();
+    const startHandle = await page.locator('.audio-selection-start').boundingBox();
+    if (!timeline || !startHandle) throw new Error('desktop: selection controls have no layout');
+    await page.mouse.move(startHandle.x + startHandle.width / 2, startHandle.y + startHandle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(timeline.x + timeline.width * 0.2, startHandle.y + startHandle.height / 2);
+    await page.mouse.up();
+    const draggedStart = Number(await page.inputValue('#decodeStartSec'));
+    if (!(draggedStart > 0 && draggedStart < reset.end)) throw new Error('desktop: waveform drag did not update numeric range');
+
+    await page.mouse.move(timeline.x + timeline.width * 0.5, timeline.y + timeline.height * 0.5);
+    await page.mouse.down();
+    await page.mouse.move(timeline.x + timeline.width * 0.6, timeline.y + timeline.height * 0.5);
+    await page.mouse.up();
+    const playhead = parseFloat(await page.locator('#audioPlayhead').evaluate(element => element.style.left));
+    const startAfterSeek = Number(await page.inputValue('#decodeStartSec'));
+    if (!(playhead > 55 && playhead < 65) || startAfterSeek !== draggedStart) {
+      throw new Error('desktop: timeline drag did not move playhead independently of selection');
+    }
+
+    await page.locator('#audioWaveform').evaluate(canvas => { canvas.width = 7; });
+    await page.setInputFiles('#wavInput', join(ROOT, 'asset', 'ROBOT36_test.mp3'));
+    await page.waitForFunction(() => {
+      const selection = document.getElementById('audioSelection');
+      const waveform = document.getElementById('audioWaveform');
+      const playhead = document.getElementById('audioPlayhead');
+      return selection.style.left === '0%' && selection.style.width === '100%' &&
+        waveform.width > 7 && playhead.style.left === '0%';
+    }, null, { timeout: 30000 });
+    const reloaded = await page.evaluate(() => ({
+      start: Number(document.getElementById('decodeStartSec').value),
+      end: Number(document.getElementById('decodeEndSec').value),
+      width: document.getElementById('audioWaveform').width,
+      currentTime: document.getElementById('audioCurrentTime').textContent,
+    }));
+    if (reloaded.start !== 0 || reloaded.end <= 0 || reloaded.width <= 7 || reloaded.currentTime !== '0:00') {
+      throw new Error('desktop: re-upload did not redraw waveform and reset timeline state');
+    }
+  }
 
   await page.click('#micStartBtn');
   await page.waitForFunction(() => ['搜索信号', '已锁定'].includes(document.getElementById('receiverStatus').textContent));
