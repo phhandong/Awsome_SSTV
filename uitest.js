@@ -21,6 +21,10 @@ const html = `
   <input type="checkbox" id="dspLms">
   <input type="checkbox" id="dspBpf" checked>
   <span id="audioMeta"></span>
+  <button id="micStartBtn"></button><button id="micStopBtn" disabled></button>
+  <span id="liveIndicator"></span><span id="receiverLevel"></span>
+  <span id="receiverStatus"></span><span id="receiverMode"></span>
+  <span id="receiverAfc"></span><span id="receiverRows"></span>
   <canvas id="spectrum"></canvas>
   <button id="decodeBtn" class="btn primary" disabled></button>
   <button id="decodeUploadedBtn" class="btn" disabled></button>
@@ -45,6 +49,7 @@ global.Blob = window.Blob;
 global.HTMLCanvasElement = window.HTMLCanvasElement;
 global.Image = window.Image;
 global.FileReader = window.FileReader;
+global.localStorage = window.localStorage;
 global.OffscreenCanvas = undefined; // 强制走 document.createElement('canvas')
 
 // jsdom canvas 是 noop,patch getContext 返回桩
@@ -69,7 +74,7 @@ await import('./js/app.js');
 await new Promise(r => setTimeout(r, 200));
 
 const sel = document.getElementById('modeSelect');
-console.log('模式数量:', sel.options.length, '(期望 38)');
+console.log('模式数量:', sel.options.length, '(期望 43)');
 console.log('模式列表:', Array.from(sel.options).map(o => o.textContent).join(' | '));
 console.log('modeInfo 内容非空:', document.getElementById('modeInfo').textContent.length > 0);
 console.log('编码按钮启用(有图后):', !document.getElementById('encodeBtn').disabled);
@@ -117,7 +122,7 @@ console.log('播放/暂停按钮切换:', showsPause && showsResume && resetsAft
 const startOffsetOk = document.getElementById('startOffset').value === '0';
 const dspDefaultsOk = !document.getElementById('dspAfc').checked &&
   !document.getElementById('dspLms').checked && document.getElementById('dspBpf').checked;
-const ok = sel.options.length === 38 && errors.length === 0 && startOffsetOk &&
+const ok = sel.options.length === 43 && errors.length === 0 && startOffsetOk &&
   dspDefaultsOk && showsPause && showsResume && resetsAfterEnd;
 console.log(ok ? '\nUI 冒烟测试通过 ✓(模式装配正确,起始时间控件就绪,无运行时错误)' : '\nUI 冒烟测试失败 ⚠');
 process.exit(ok ? 0 : 1);

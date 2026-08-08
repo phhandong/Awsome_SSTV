@@ -7,6 +7,7 @@ import { encodeWAV, decodeWAV } from './wav.js';
 import { decodeAudioFile, sliceFromStart } from './audiodecode.js';
 import { magnitudeSpectrum, drawSpectrumRow } from './fft.js';
 import { AudioPlayer } from './audioPlayer.js';
+import { WebSSTVDecoder } from './web-receiver.js';
 import * as ui from './ui.js';
 
 const state = {
@@ -19,6 +20,8 @@ const state = {
   isProcessing: false,   // 防止重复处理
   audioPlayer: null,     // 交互式音频播放器
   audioSelection: { start: 0, end: 0 }, // 选中的音频区域
+  webDecoder: null,
+  micActive: false,
 };
 
 const FFT_SIZE = 512;
@@ -38,7 +41,8 @@ function init() {
   document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 
   // 恢复保存的主题
-  const savedTheme = localStorage.getItem('theme') || 'dark';
+  let savedTheme = 'dark';
+  try { savedTheme = localStorage.getItem('theme') || 'dark'; } catch (_) {}
   document.documentElement.setAttribute('data-theme', savedTheme);
   document.getElementById('themeToggle').textContent = savedTheme === 'light' ? '☀' : '🌙';
 
@@ -64,6 +68,16 @@ function init() {
     if (!state.uploadedAudio) return;
     onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
   });
+  document.getElementById('micStartBtn').addEventListener('click', startMicrophoneReceiver);
+  document.getElementById('micStopBtn').addEventListener('click', stopMicrophoneReceiver);
+
+  if (typeof Worker !== 'undefined') {
+    state.webDecoder = new WebSSTVDecoder();
+    bindReceiverEvents(state.webDecoder);
+  } else {
+    document.getElementById('micStartBtn').disabled = true;
+    setReceiverStatus('当前浏览器不支持 Worker');
+  }
 
   // 初始化音频播放器
   state.audioPlayer = new AudioPlayer('audioPlayerWrapper', {
@@ -316,7 +330,7 @@ function onDownload() {
 
 // ---- 解码 ----
 // pcm/sr 为待解码音频;起始和结束时间从音频播放器选区读取
-function onDecode(pcm, sr) {
+async function onDecode(pcm, sr) {
   if (!pcm || state.isProcessing) return;
 
   state.isProcessing = true;
@@ -331,39 +345,100 @@ function onDecode(pcm, sr) {
   const endSec = state.audioSelection.end > 0 ? state.audioSelection.end : totalDuration;
   const duration = endSec - startSec;
 
-  // 使用 setTimeout 让 UI 更新
-  setTimeout(() => {
-    try {
-      let work = pcm;
-
-      // 根据选区截取音频
-      if (startSec > 0 || endSec < totalDuration) {
-        const startSample = Math.floor(startSec * sr);
-        const endSample = Math.min(Math.floor(endSec * sr), pcm.length);
-        work = pcm.slice(startSample, endSample);
-        ui.toast(`解码选中区域 ${startSec.toFixed(1)}s ~ ${endSec.toFixed(1)}s (${duration.toFixed(1)}s)…`);
-      } else {
-        ui.toast('解码完整音频…');
-      }
-
-      const result = decode(work, sr, {
-        onProgress: p => ui.setProgress('decProgress', p),
-        dsp: readDspOptions(),
-      });
-
-      ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
-      document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
-      ui.setProgress('decProgress', 1);
-      ui.toast(`解码完成 · ${result.mode.name}`, 'success');
-    } catch (e) {
-      console.error(e);
-      ui.toast('解码失败: ' + e.message, 'error');
-    } finally {
-      state.isProcessing = false;
-      decodeBtn.classList.remove('loading');
-      decodeUploadedBtn.classList.remove('loading');
+  try {
+    let work = pcm;
+    if (startSec > 0 || endSec < totalDuration) {
+      const startSample = Math.floor(startSec * sr);
+      const endSample = Math.min(Math.floor(endSec * sr), pcm.length);
+      work = pcm.slice(startSample, endSample);
+      ui.toast(`解码选中区域 ${startSec.toFixed(1)}s ~ ${endSec.toFixed(1)}s (${duration.toFixed(1)}s)…`);
+    } else {
+      ui.toast('在后台解码完整音频…');
     }
-  }, 50);
+
+    const dsp = { ...readDspOptions(), engine: 'mmsstv' };
+    const result = state.webDecoder
+      ? await state.webDecoder.decode(work, sr, { dsp, emitFrames: true })
+      : decode(work, sr, { dsp });
+    renderReceiverFrame(result);
+    ui.setProgress('decProgress', 1);
+    ui.toast(`解码完成 · ${result.mode.name}`, 'success');
+  } catch (e) {
+    console.error(e);
+    ui.toast('解码失败: ' + e.message, 'error');
+  } finally {
+    state.isProcessing = false;
+    decodeBtn.classList.remove('loading');
+    decodeUploadedBtn.classList.remove('loading');
+  }
+}
+
+function bindReceiverEvents(receiver) {
+  receiver.addEventListener('searching', () => {
+    if (state.micActive) setReceiverStatus('搜索信号');
+  });
+  receiver.addEventListener('level', ({ detail }) => {
+    const percent = Math.min(100, Math.sqrt(Math.max(0, detail.rms)) * 140);
+    document.getElementById('receiverLevel').style.width = `${percent}%`;
+  });
+  receiver.addEventListener('locked', ({ detail }) => {
+    setReceiverStatus('已锁定', 'locked');
+    document.getElementById('receiverMode').textContent = detail.mode.name;
+    document.getElementById('receiverRows').textContent = `0 / ${detail.mode.height}`;
+  });
+  receiver.addEventListener('row', ({ detail }) => {
+    document.getElementById('receiverRows').textContent = `${detail.rows} / ${detail.totalRows}`;
+    ui.setProgress('decProgress', detail.rows / detail.totalRows);
+  });
+  receiver.addEventListener('frame', ({ detail }) => renderReceiverFrame(detail.result));
+  receiver.addEventListener('error', ({ detail }) => {
+    if (state.micActive) setReceiverStatus('等待有效信号', 'active');
+    console.warn('Receiver:', detail.message);
+  });
+}
+
+function renderReceiverFrame(result) {
+  ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
+  document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
+  document.getElementById('receiverMode').textContent = result.mode.name;
+  document.getElementById('receiverRows').textContent = `${result.height} / ${result.height}`;
+  document.getElementById('receiverAfc').textContent = result.dsp?.afcLocked
+    ? `${result.dsp.afcOffsetHz >= 0 ? '+' : ''}${result.dsp.afcOffsetHz.toFixed(1)} Hz`
+    : (result.dsp?.afc ? '未锁定' : '关闭');
+}
+
+function setReceiverStatus(text, stateClass = '') {
+  document.getElementById('receiverStatus').textContent = text;
+  document.getElementById('liveIndicator').className = `live-indicator ${stateClass}`.trim();
+}
+
+async function startMicrophoneReceiver() {
+  if (!state.webDecoder || state.micActive) return;
+  const start = document.getElementById('micStartBtn');
+  const stop = document.getElementById('micStopBtn');
+  start.disabled = true;
+  setReceiverStatus('请求权限', 'active');
+  try {
+    await state.webDecoder.startMicrophone({ dsp: { ...readDspOptions(), engine: 'mmsstv' } });
+    state.micActive = true;
+    stop.disabled = false;
+    setReceiverStatus('搜索信号', 'active');
+    ui.toast('麦克风接收已开始', 'success');
+  } catch (error) {
+    start.disabled = false;
+    setReceiverStatus('无法启动');
+    ui.toast('麦克风启动失败: ' + error.message, 'error');
+  }
+}
+
+async function stopMicrophoneReceiver() {
+  if (!state.webDecoder || !state.micActive) return;
+  state.micActive = false;
+  await state.webDecoder.stopMicrophone(true);
+  document.getElementById('micStartBtn').disabled = false;
+  document.getElementById('micStopBtn').disabled = true;
+  document.getElementById('receiverLevel').style.width = '0';
+  setReceiverStatus('已停止');
 }
 
 // ---- 自测闭环 ----

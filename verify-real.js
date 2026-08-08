@@ -73,7 +73,9 @@ try { decoder.free?.(); } catch (_) {}
 
 const mono = monoFromChannels(channelData);
 const pcm = resample(mono, sampleRate, DEFAULT_SAMPLE_RATE);
-const decoded = decode(sliceFromStart(pcm, DEFAULT_SAMPLE_RATE, START_OFFSET_SECONDS), DEFAULT_SAMPLE_RATE);
+const decoded = decode(sliceFromStart(pcm, DEFAULT_SAMPLE_RATE, START_OFFSET_SECONDS), DEFAULT_SAMPLE_RATE, {
+  dsp: { engine: 'mmsstv', bpf: true, afc: true },
+});
 const referenceJpeg = jpeg.decode(readFileSync(REFERENCE_PATH), { useTArray: true });
 
 if (decoded.mode.name !== 'Robot 36' || decoded.width !== 320 || decoded.height !== 240) {

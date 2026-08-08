@@ -8,10 +8,12 @@
     "verify:dsp": "node verify-dsp.js",
     "verify:audio": "node verify-audio.js",
     "verify:robust": "node verify-robust.js",
+    "verify:stream": "node verify-stream.js",
     "test:catalog": "node verify-catalog.js",
     "test:ui": "node uitest.js",
+    "test:browser": "node verify-browser.js",
     "test:real": "node verify-real.js",
-    "test": "npm run test:catalog && npm run verify:audio && npm run verify:dsp && npm run verify:robust && npm run verify && npm run test:ui && npm run test:real",
+    "test": "npm run test:catalog && npm run verify:audio && npm run verify:dsp && npm run verify:stream && npm run verify:robust && npm run verify && npm run test:ui && npm run test:real",
     "dump:real": "node dump_result.js"
   },
   "license": "MIT",
@@ -19,6 +21,7 @@
     "jpeg-js": "^0.4.4",
     "jsdom": "^29.1.1",
     "mpg123-decoder": "^1.0.3",
+    "playwright-core": "^1.62.1",
     "pngjs": "^7.0.0"
   }
 }

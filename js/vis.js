@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // vis.js — SSTV VIS(Vertical Interval Signaling)头编解码
 //
 // VIS 头结构(公开 SSTV 规范,频率锚点逆向确认):
@@ -52,6 +53,60 @@ export function visHeaderSegments(visCode7) {
 
 // VIS 头总时长(ms)
 export const VIS_HEADER_MS = LEADER_MS + BREAK_MS + 10 * BIT_MS;  // 300+10+300 = 610ms
+
+const NARROW_FSK_CODES = new Map([
+  [0x02, 0x1022d], [0x04, 0x1042d], [0x05, 0x1052d],
+  [0x14, 0x1142d], [0x15, 0x1152d], [0x16, 0x1162d],
+]);
+
+export function narrowHeaderSegments(modeCode) {
+  const chars = [0x2d, 0x15, modeCode, (0x15 ^ modeCode) & 0x3f];
+  const segments = [{ freq: FREQ.FSK_SPACE, durationMs: 150 }];
+  for (const value of chars) {
+    for (let bit = 0; bit < 6; bit++) {
+      segments.push({ freq: value & (1 << bit) ? FREQ.NARROW_SYNC : FREQ.FSK_SPACE, durationMs: 22 });
+    }
+  }
+  return segments;
+}
+
+export function decodeNarrowFSKHeader(freq, sr, searchStart = 0) {
+  const guard = Math.floor(100 * sr / 1000);
+  const bitSamples = 22 * sr / 1000;
+  const searchEnd = Math.min(freq.length, searchStart + Math.floor(5 * sr));
+  let start = -1;
+  for (let i = searchStart; i + guard < searchEnd; i++) {
+    if (!near(freq[i], FREQ.FSK_SPACE, 90)) continue;
+    const probes = 8;
+    let matches = 0;
+    for (let p = 0; p < probes; p++) {
+      const at = i + Math.floor((p + 0.5) * guard / probes);
+      if (near(freq[at], FREQ.FSK_SPACE, 90)) matches++;
+    }
+    if (matches < probes - 1) continue;
+    let transition = i + guard;
+    const limit = Math.min(freq.length, transition + Math.floor(100 * sr / 1000));
+    while (transition < limit && !near(freq[transition], FREQ.NARROW_SYNC, 90)) transition++;
+    if (transition < limit) { start = transition; break; }
+  }
+  if (start < 0) return null;
+
+  const chars = [];
+  for (let c = 0; c < 4; c++) {
+    let value = 0;
+    for (let bit = 0; bit < 6; bit++) {
+      const at = Math.floor(start + (c * 6 + bit + 0.5) * bitSamples);
+      if (at >= freq.length) return null;
+      if (near(freq[at], FREQ.NARROW_SYNC, 100)) value |= 1 << bit;
+      else if (!near(freq[at], FREQ.FSK_SPACE, 100)) return null;
+    }
+    chars.push(value);
+  }
+  if (chars[0] !== 0x2d || chars[1] !== 0x15 || chars[3] !== ((chars[1] ^ chars[2]) & 0x3f)) return null;
+  const modeKey = NARROW_FSK_CODES.get(chars[2]);
+  if (!modeKey) return null;
+  return { visCode7: modeKey, sampleOffset: Math.floor(start + 24 * bitSamples), fsk: true };
+}
 
 // 解码端:在样本数组中检测 VIS 头。
 // 输入:demod 得到的频率数组 freq[](每样本一个频率估计),起始搜索偏移,采样率。

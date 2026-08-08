@@ -94,6 +94,26 @@
         <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
       </div>
 
+      <div class="live-receiver" aria-label="麦克风实时接收">
+        <div class="live-toolbar">
+          <div class="live-title">
+            <span class="live-indicator" id="liveIndicator" aria-hidden="true"></span>
+            <span>实时接收</span>
+          </div>
+          <div class="btn-row compact">
+            <button id="micStartBtn" class="btn" aria-label="开始麦克风接收">● 开始</button>
+            <button id="micStopBtn" class="btn ghost" aria-label="停止麦克风接收" disabled>■ 停止</button>
+          </div>
+        </div>
+        <div class="receiver-meter" aria-hidden="true"><span id="receiverLevel"></span></div>
+        <div class="receiver-telemetry" role="status" aria-live="polite">
+          <span><small>状态</small><strong id="receiverStatus">待机</strong></span>
+          <span><small>模式</small><strong id="receiverMode">--</strong></span>
+          <span><small>AFC</small><strong id="receiverAfc">--</strong></span>
+          <span><small>进度</small><strong id="receiverRows">0 / 0</strong></span>
+        </div>
+      </div>
+
       <div class="audio-player-wrapper" id="audioPlayerWrapper" hidden>
         <div class="audio-player-controls">
           <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放/暂停">▶</button>
@@ -173,6 +193,7 @@
 
   <footer role="contentinfo">
     <p>基于 <strong>MMSSTV v1.06, JE3HHT</strong> 重构 · 协议参数来自公开 SSTV 规范 · 纯前端实现,无后端</p>
+    <a class="deerflow-signature" href="https://deerflow.tech" target="_blank" rel="noopener noreferrer">Created By Deerflow</a>
   </footer>
 
   <div id="toast" class="toast" hidden role="alert" aria-live="assertive"></div>

@@ -8,10 +8,11 @@
 
 - 🎨 **生成器**:选择图片 + 模式,合成 SSTV 测试音频,可播放 / 下载 WAV
 - 📡 **解码器**:上传 **WAV 或 MP3** 文件,解码出图像;支持频谱瀑布图可视化(700–2700 Hz)
+- 🎙️ **实时接收**:在 HTTPS 或 localhost 下使用麦克风，AudioWorklet 采集、Worker 解码并逐行更新图像
 - ⏱️ **起始时间偏移**:可设置从音频的第几秒开始解码(跳过前导噪声 / 选取特定帧)
 - 🎛️ **DSP 开关**:可独立启用/关闭 AFC 自动频偏校正、CLMS/NLMS 自适应线增强和 BPF 带通滤波
 - ⟲ **自测闭环**:一键生成 → 解码 → 原图对照 + PSNR 指标
-- 📻 **支持模式**:Martin 1/2、Scottie 1/2/DX/S1、Robot 36/72
+- 📻 **支持模式**:MMSSTV 接收目录的 43 种模式，包括六种窄带 N/MC 模式
 - 📱 响应式暗色主题,移动端 / 桌面端自适应
 
 ## 闭环验证结果(44100 Hz,WAV 往返)
@@ -28,7 +29,22 @@
 
 > Robot 系因 YUV 4:2:2 色度下采样 inherent 损失,PSNR 较 RGB 模式低,属正常。
 
-运行验证:`node verify.js`
+运行验证:`npm test`
+
+### JavaScript 接收 API
+
+```js
+import { SSTVReceiver } from './js/receiver.js';
+
+const receiver = new SSTVReceiver({ dsp: { engine: 'mmsstv', bpf: true } });
+receiver.on('locked', event => console.log(event.mode.name));
+receiver.on('row', event => console.log(event.rows));
+receiver.on('frame', event => render(event.result.pixels));
+receiver.push(pcmChunk, inputSampleRate);
+receiver.end();
+```
+
+文件上传和麦克风输入共用该增量接收器。`decode()` 继续提供同步兼容接口；MMSSTV CPLL/FSK/VIS 负责接收锁定，完整录音的像素积分使用零相位频率轨以保留短像素边界。
 
 ## 本地预览
 
@@ -44,7 +60,7 @@ npx serve
 # 然后浏览器打开 http://localhost:8000
 ```
 
-直接双击 `index.html` 也能用(ES module 在 file:// 下多数浏览器允许同源加载)。
+文件解码可直接通过静态服务器使用。麦克风 API 要求 HTTPS 或 localhost，不能从普通 `file://` 页面启动。
 
 ## 部署到 GitHub Pages
 
@@ -101,7 +117,9 @@ MODES[95] = { visCode:95, name:'PD120', width:640, height:480, ... };
 ## 许可与致谢
 
 - 协议实现:MIT
-- 原始引擎 `SSTVENG.dll` 版权 © JE3HHT,闭源免费软件,本项目未使用其代码,仅参考公开协议规范
+- 原创 UI、编码器和工具:MIT
+- MMSSTV 等价接收 DSP:LGPL-3.0-or-later，见 `LICENSES/MMSSTV-NOTICE.md`
+- MMSSTV 源码版权 © 2000-2013 Makoto Mori、Nobuyuki Oba
 - RXSSTV 外壳 © ON6MU
 
 ## 验证命令汇总
@@ -109,6 +127,7 @@ MODES[95] = { visCode:95, name:'PD120', width:640, height:480, ... };
 ```bash
 node verify.js     # 核心:8 模式闭环 PSNR
 node verify-dsp.js # DSP:AFC/LMS/BPF 算法与开关
+node verify-stream.js # 流式重采样、CPLL、标准/窄带增量接收
 node verify-audio.js # WAV:PCM/float/边界校验
 node uitest.js     # UI:装配与模式填充(jsdom)
 ```

@@ -1,4 +1,4 @@
-// verify-catalog.js - Guard the runtime-extracted RXSSTV mode catalog.
+// verify-catalog.js - Guard the MMSSTV mode catalog, including narrow modes.
 
 import { RXSSTV_MODE_CATALOG, listModes } from './js/modes.js';
 
@@ -7,7 +7,7 @@ const engineIndexes = new Set(RXSSTV_MODE_CATALOG.map(mode => mode.engineIndex))
 const implemented = RXSSTV_MODE_CATALOG.filter(mode => mode.implemented);
 const browserModes = listModes();
 
-let ok = RXSSTV_MODE_CATALOG.length === 37 && engineIndexes.size === 37;
+let ok = RXSSTV_MODE_CATALOG.length === 43 && engineIndexes.size === 43 && browserModes.length === 43;
 for (const catalogMode of implemented) {
   const browserMode = browserModes.find(mode => normalized(mode.name) === normalized(catalogMode.name));
   const matches = browserMode && browserMode.width === catalogMode.width && browserMode.height === catalogMode.height;
@@ -19,8 +19,9 @@ for (const catalogMode of implemented) {
 
 const robot36 = RXSSTV_MODE_CATALOG[3];
 const pd120 = RXSSTV_MODE_CATALOG[16];
+const mc180n = RXSSTV_MODE_CATALOG[42];
 if (robot36.name !== 'Robot 36' || robot36.durationMs !== 36000 ||
-    pd120.width !== 640 || pd120.height !== 496) {
+    pd120.width !== 640 || pd120.height !== 496 || mc180n.name !== 'MC180-N') {
   ok = false;
   console.error('runtime catalog anchor values changed');
 }

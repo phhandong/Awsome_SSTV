@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // demod.js — FM 解调 + 重采样 + 同步搜索 + AutoSlant
 //
 // 解调方法:解析信号瞬时频率法。
@@ -6,6 +7,7 @@
 // 每样本一个频率值,时间分辨率最高,适合 SSTV 短同步脉冲(4.862ms)与 VIS 位(30ms)。
 
 import { FREQ, DEFAULT_SAMPLE_RATE } from './modes.js';
+import { MMSSTVCPLL, MMSSTVCLMS, StreamingFIR, makeMmsstvBandpass } from './mmsstv-dsp.js';
 
 // 线性重采样到目标采样率
 export function resample(samples, fromSr, toSr = DEFAULT_SAMPLE_RATE) {
@@ -129,6 +131,7 @@ function convolve(samples, h) {
  * 数个载波周期。返回 Hz 值供后续 VIS/SYNC/像素使用。
  */
 export function demodulate(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
+  if (options.engine === 'mmsstv') return demodulateMmsstv(samples, sr, options);
   // 1. 可选带通与自适应线增强。BPF 默认开启以保持原行为；LMS 默认关闭。
   let filt = options.bpf === false ? samples : convolve(samples, makeBandpass(sr));
   if (options.lms === true) filt = lmsAdaptiveLineEnhance(filt, sr, options.lmsOptions);
@@ -204,6 +207,38 @@ export function demodulate(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
   return movingAverage(freq, smoothLen);
 }
 
+export function demodulateMmsstv(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
+  const narrow = options.narrow === true;
+  let processor = null;
+  if (options.bpf !== false) {
+    processor = new StreamingFIR(makeMmsstvBandpass(sr, {
+      quality: options.bpfQuality ?? 2,
+      // MMSSTV uses HBPFS (about 400..2500 Hz) while searching so that the
+      // 1100/1300-Hz VIS bits are not removed. The receiver switches to the
+      // narrower image filter only after mode lock.
+      low: options.bpfLow ?? (narrow ? 1600 : 400),
+      high: options.bpfHigh ?? (narrow ? 2500 : 2500),
+    }));
+  }
+  const lms = options.lms === true ? new MMSSTVCLMS(sr, options.lmsMode || 'lms') : null;
+  const pll = new MMSSTVCPLL(sr, { narrow, ...(options.pllOptions || {}) });
+  const out = new Float32Array(samples.length);
+  const center = narrow ? (2044 + 2300) / 2 : 1900;
+  const shift = narrow ? 256 : 800;
+  let previous = 0;
+  for (let i = 0; i < samples.length; i++) {
+    let value = (samples[i] + previous) * 0.5;
+    previous = samples[i];
+    if (processor) value = processor.process(value);
+    if (lms) value = lms.process(value);
+    // CSSTVDEM feeds CPLL with AGC-normalized 16-bit soundcard units. Keeping
+    // that scale is important for fast acquisition of 30-ms VIS tones.
+    const control = pll.process(value * 32768) / 32768;
+    out[i] = Math.max(narrow ? 1700 : 1000, Math.min(2600, center - control * shift));
+  }
+  return out;
+}
+
 /**
  * AFC: lock to the first stable VIS leader-like tone and use its known
  * 1900-Hz frequency to remove a constant receiver/tuning offset.
@@ -265,9 +300,9 @@ function movingAverage(arr, len) {
  * (MP3 解调的瞬时频率在 SYNC 段单样本抖动可达 ±400Hz),改用
  * "滑动窗口内落在 1200Hz 容差的样本占比 ≥ 阈值"定位 SYNC 区段。
  */
-export function findSyncPulses(freq, sr, minSyncMs = 4.0, ratioThresh = 0.25) {
+export function findSyncPulses(freq, sr, minSyncMs = 4.0, ratioThresh = 0.25, targetHz = FREQ.SYNC) {
   const minLen = Math.floor(minSyncMs * sr / 1000);
-  const lo = 1140, hi = 1260;
+  const lo = targetHz - 60, hi = targetHz + 60;
   const winMs = 5;  // 占比判定窗口(大于 SYNC 抖动相关时间)
   const win = Math.max(1, Math.floor(winMs * sr / 1000));
   // ratioThresh:窗口内落在 1200Hz 容差的样本占比阈值。

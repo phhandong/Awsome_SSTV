@@ -8,7 +8,7 @@
 //   5. 相位连续(每样本累加 phase += 2π f/sr),避免边界爆音
 
 import { FREQ, pixelToFreq, SegType, ColorSpace, DEFAULT_SAMPLE_RATE } from './modes.js';
-import { visHeaderSegments } from './vis.js';
+import { narrowHeaderSegments, visHeaderSegments } from './vis.js';
 
 // 2048 点正弦查表,加速合成
 const SIN_LUT = new Float32Array(2048);
@@ -41,7 +41,7 @@ export function encode(image, mode, opts = {}) {
     : (opts.imageToRgba || defaultImageToRgba)(image, width, height);
 
   // 2. 预估总样本数,分配缓冲
-  const visMs = 610;  // VIS 头总时长
+  const visMs = mode.narrow ? (150 + 24 * 22) : 610;
   const lineCount = mode.dataLines || height;
   const totalMs = visMs + mode.lineDurationMs * lineCount * (mode.interlace ? mode.interlace.fields : 1);
   const totalSamples = Math.ceil(totalMs * sr / 1000) + sr;  // +1s 余量
@@ -53,7 +53,8 @@ export function encode(image, mode, opts = {}) {
   let n = 0;  // 已写入样本数
 
   // 3. VIS 头
-  for (const seg of visHeaderSegments(mode.visCode)) {
+  const header = mode.narrow ? narrowHeaderSegments(mode.fskCode) : visHeaderSegments(mode.visCode);
+  for (const seg of header) {
     n = appendTone(samples, n, seg.freq, seg.durationMs, sr, phaseRef);
   }
 
@@ -91,7 +92,7 @@ function appendLine(samples, n, mode, rgba, y, sr, phaseRef) {
     if (seg.type === SegType.SCAN) {
       // 取该行该通道的像素值数组(0..255)
       const chanPixels = extractChannel(rgba, mode, y, seg.channel, width);
-      n = appendScan(samples, n, chanPixels, seg.durationMs, sr, phaseRef);
+      n = appendScan(samples, n, chanPixels, seg.durationMs, sr, phaseRef, mode);
     } else {
       // SYNC / PORCH / SYNC_PORCH:定频
       n = appendTone(samples, n, seg.freq, seg.durationMs, sr, phaseRef);
@@ -155,13 +156,13 @@ function appendTone(samples, n, freq, durationMs, sr, phaseRef) {
 }
 
 // 追加扫描段:逐像素调频,相位连续
-function appendScan(samples, n, pixels, durationMs, sr, phaseRef) {
+function appendScan(samples, n, pixels, durationMs, sr, phaseRef, mode) {
   const count = pixels.length;
   const totalSamples = Math.floor(durationMs * sr / 1000);
   // 每像素占的样本数(浮点,均分)
   const perPixel = totalSamples / count;
   for (let x = 0; x < count; x++) {
-    const freq = pixelToFreq(pixels[x]);
+    const freq = pixelToFreq(pixels[x], mode);
     const start = n + x * perPixel;
     const end = (x === count - 1) ? n + totalSamples : n + (x + 1) * perPixel;
     const sStart = Math.floor(start), sEnd = Math.floor(end);

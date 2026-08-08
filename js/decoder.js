@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
 // decoder.js — SSTV 解码器:PCM → 图像
 //
 // 流程:
@@ -10,7 +11,7 @@
 
 import { DEFAULT_SAMPLE_RATE, SegType, ColorSpace, getMode, freqToPixel, FREQ } from './modes.js';
 import { resample, demodulate, applyAFC, findSyncPulses, autoSlant } from './demod.js';
-import { decodeVISHeader } from './vis.js';
+import { decodeNarrowFSKHeader, decodeVISHeader } from './vis.js';
 
 /**
  * @param {Float32Array} samples  PCM
@@ -19,18 +20,19 @@ import { decodeVISHeader } from './vis.js';
  * @returns {{width,height,pixels:Uint8ClampedArray,mode,psnr?:number}|null}
  */
 export function decode(samples, sampleRate, opts = {}) {
+  const dspOpts = opts.dsp || opts;
   // 1. 重采样
-  const sr = DEFAULT_SAMPLE_RATE;
+  const sr = dspOpts.engine === 'mmsstv' ? 11025 : DEFAULT_SAMPLE_RATE;
   let pcm = (sampleRate === sr) ? samples : resample(samples, sampleRate, sr);
 
   // 2. DSP + 解调。嵌套 dsp 供 UI 使用，同时兼容直接传入平铺选项。
-  const dspOpts = opts.dsp || opts;
   const dspState = {
     bpf: dspOpts.bpf !== false,
     lms: dspOpts.lms === true,
     afc: dspOpts.afc === true,
     afcOffsetHz: 0,
     afcLocked: false,
+    engine: dspOpts.engine || 'legacy',
   };
   let freq = demodulate(pcm, sr, {
     ...dspState,
@@ -44,10 +46,35 @@ export function decode(samples, sampleRate, opts = {}) {
   }
 
   // 3. VIS 识别
-  const vis = decodeVISHeader(freq, sr, 0);
+  const vis = decodeVISHeader(freq, sr, 0) || decodeNarrowFSKHeader(freq, sr, 0);
   if (!vis) throw new Error('未检测到 VIS 头(可能是非 SSTV 信号或信噪比过低)');
   const mode = getMode(vis.visCode7);
   if (!mode) throw new Error('未知 VIS 码: ' + vis.visCode7);
+  if (mode.narrow && dspState.engine === 'mmsstv') {
+    freq = demodulate(pcm, sr, {
+      ...dspState,
+      narrow: true,
+      bpfLow: mode.bpfLow,
+      bpfHigh: mode.bpfHigh,
+      lmsOptions: dspOpts.lmsOptions,
+    });
+  } else if (dspState.engine === 'mmsstv') {
+    // MMSSTV's CPLL owns acquisition and mode lock. For a complete browser
+    // recording, retain the zero-crossing track for pixel integration: it is
+    // zero-phase, preserves short pixels and avoids adding the live loop's
+    // group delay to every scan line.
+    freq = demodulate(pcm, sr, {
+      ...dspState,
+      engine: 'legacy',
+      lmsOptions: dspOpts.lmsOptions,
+    });
+    if (dspState.afc) {
+      const correction = applyAFC(freq, sr, dspOpts.afcOptions);
+      freq = correction.freq;
+      dspState.afcOffsetHz = correction.offsetHz;
+      dspState.afcLocked = correction.locked;
+    }
+  }
   const { width, height } = mode;
 
   // AVT 不以行同步锁定。VIS 后按其标准行周期连续取样，因而不存在可供
@@ -74,10 +101,10 @@ export function decode(samples, sampleRate, opts = {}) {
   //    再用行周期过滤假阳性(间隔 < 0.6 行周期的相邻脉冲合并)。
   const lineCount = mode.dataLines || height;
   const need = mode.interlace ? height : (mode.syncAtLineStart ? lineCount - 1 : lineCount);
-  let rawPulses = findSyncPulses(freq, sr, 4.0, 0.25);
+  let rawPulses = findSyncPulses(freq, sr, 4.0, 0.25, mode.syncFreq ?? FREQ.SYNC);
   let imgPulses = rawPulses.filter(p => p > vis.sampleOffset).sort((a, b) => a - b);
   if (imgPulses.length < need * 0.9) {
-    imgPulses = findSyncPulses(freq, sr, 4.0, 0.12)
+    imgPulses = findSyncPulses(freq, sr, 4.0, 0.12, mode.syncFreq ?? FREQ.SYNC)
       .filter(p => p > vis.sampleOffset).sort((a, b) => a - b);
   }
   if (imgPulses.length === 0) throw new Error('未找到同步脉冲');
@@ -164,7 +191,7 @@ function decodeRgb(freq, mode, firstScanStarts, sr, pixels, width, height, opts)
         for (let x = 0; x < width; x++) {
           const pxStart = Math.floor(lineStart + segOffsetSamples + guard + x * perPixel);
           const pxEnd = Math.floor(lineStart + segOffsetSamples + guard + (x + 1) * perPixel);
-          const lum = averageFreqToPixel(freq, pxStart, pxEnd);
+          const lum = averageFreqToPixel(freq, pxStart, pxEnd, mode);
           const pixelOff = (y * width + x) * 4;
           if (mode.colorSpace === ColorSpace.GRAY) {
             pixels[pixelOff] = lum;
@@ -208,7 +235,7 @@ function decodeYuvPaired(freq, mode, firstScanStarts, sr, pixels, width, height,
         for (let x = 0; x < width; x++) {
           const pxStart = Math.floor(lineStart + segOffsetSamples + guard + x * perPixel);
           const pxEnd = Math.floor(lineStart + segOffsetSamples + guard + (x + 1) * perPixel);
-          const value = averageFreqToPixel(freq, pxStart, pxEnd);
+          const value = averageFreqToPixel(freq, pxStart, pxEnd, mode);
           if (seg.channel === 'YODD') Y[row0 * width + x] = value;
           else if (seg.channel === 'YEVEN') Y[row1 * width + x] = value;
           else {
@@ -265,7 +292,7 @@ function decodeYuvInterlaced(freq, mode, firstScanStarts, sr, pixels, width, hei
         for (let x = 0; x < width; x++) {
           const pxStart = Math.floor(lineStart + segOffsetSamples + guard + x * perPixel);
           const pxEnd = Math.floor(lineStart + segOffsetSamples + guard + (x + 1) * perPixel);
-          const v = averageFreqToPixel(freq, pxStart, pxEnd);
+          const v = averageFreqToPixel(freq, pxStart, pxEnd, mode);
           target[y * width + x] = v;
         }
       }
@@ -312,13 +339,13 @@ function decodeYuvInterlaced(freq, mode, firstScanStarts, sr, pixels, width, hei
 }
 
 // 取样本窗口 [s,e) 内的平均频率 → 亮度
-function averageFreqToPixel(freq, s, e) {
+function averageFreqToPixel(freq, s, e, mode) {
   const s0 = Math.max(0, Math.floor(s));
   const e0 = Math.min(freq.length, Math.ceil(e));
   if (e0 <= s0) return 0;
   let sum = 0;
   for (let i = s0; i < e0; i++) sum += freq[i];
-  return freqToPixel(sum / (e0 - s0));
+  return freqToPixel(sum / (e0 - s0), mode);
 }
 
 function clamp(v) {
@@ -422,11 +449,11 @@ function trackLineStartsPLL(pulses, imgStart, mode, sr, freq) {
  * 找 1200Hz(±60)样本数最多的窗口起点。对应 MMSSTV ReSync 的最优同步点搜索。
  * 信号差时(1200Hz 占比低)返回 center 不动,避免被噪声拉偏。
  */
-function refineSync(freq, center, searchMs, syncMs, sr) {
+function refineSync(freq, center, searchMs, syncMs, sr, targetHz = FREQ.SYNC) {
   const c = Math.floor(center);
   const search = Math.floor(searchMs * sr / 1000);
   const winLen = Math.floor(syncMs * sr / 1000);
-  const lo = 1140, hi = 1260;
+  const lo = targetHz - 60, hi = targetHz + 60;
   const isSync = i => i >= 0 && i < freq.length && freq[i] >= lo && freq[i] <= hi;
   let pos = c - search;
   let count = 0;
@@ -453,7 +480,7 @@ function resyncPulses(freq, pulses, mode, sr) {
   if (!syncSeg) return pulses;
   const refined = [];
   for (const candidate of pulses.slice().sort((a, b) => a - b)) {
-    const best = refineSync(freq, candidate, 5, syncSeg.durationMs, sr);
+    const best = refineSync(freq, candidate, 5, syncSeg.durationMs, sr, mode.syncFreq ?? FREQ.SYNC);
     if (refined.length === 0 || best - refined[refined.length - 1] >= 5) {
       refined.push(best);
     }

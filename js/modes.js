@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Mode parameters adapted from MMSSTV, Copyright 2000-2013 Makoto Mori, Nobuyuki Oba.
 // modes.js — SSTV 模式数据库(唯一时序真相源)
 //
 // 频率常量来源:逆向 SSTVENG.dll (MMSSTV v1.06, JE3HHT) 确认的标准 SSTV 频率。
@@ -14,17 +16,25 @@ export const FREQ = {
   VIS_BREAK: 1200,   // VIS break / start / stop bit
   VIS_BIT_1: 1100,   // VIS 数据位 "1"
   VIS_BIT_0: 1300,   // VIS 数据位 "0"
+  NARROW_SYNC: 1900,
+  NARROW_BLACK: 2044,
+  NARROW_WHITE: 2300,
+  FSK_SPACE: 2100,
 };
 
 // 亮度 0..255 → 频率 1500(黑)..2300(白),线性
-export function pixelToFreq(v) {
-  return FREQ.BLACK + (v / 255) * (FREQ.WHITE - FREQ.BLACK);
+export function pixelToFreq(v, mode = null) {
+  const low = mode?.frequencyLow ?? FREQ.BLACK;
+  const high = mode?.frequencyHigh ?? FREQ.WHITE;
+  return low + (v / 255) * (high - low);
 }
 // 频率 → 亮度(钳位)
-export function freqToPixel(f) {
-  if (f < FREQ.BLACK) f = FREQ.BLACK;
-  if (f > FREQ.WHITE) f = FREQ.WHITE;
-  return Math.round((f - FREQ.BLACK) / (FREQ.WHITE - FREQ.BLACK) * 255);
+export function freqToPixel(f, mode = null) {
+  const low = mode?.frequencyLow ?? FREQ.BLACK;
+  const high = mode?.frequencyHigh ?? FREQ.WHITE;
+  if (f < low) f = low;
+  if (f > high) f = high;
+  return Math.round((f - low) / (high - low) * 255);
 }
 
 // 段类型
@@ -40,7 +50,7 @@ export const ColorSpace = { RGB: 'rgb', YUV: 'yuv', GRAY: 'gray' };
 // RXSSTV/MMSSTV v1.06 的公共模式目录。数据由 32 位运行时直接调用
 // mmsGetModeName / mmsGetModeSize / mmsGetModeLength 提取，而非按文档猜测。
 // `implemented` 仅表示当前浏览器端已有完整的收发时序实现；目录本身保留全部
-// 37 个引擎模式，供后续逐族复刻时使用，并避免把内部类型索引误当作公共索引。
+// 43 个 MMSSTV 模式，供逐族复刻时使用，并避免把内部类型索引误当作公共索引。
 export const RXSSTV_MODE_CATALOG = [
   { engineIndex: 0, name: 'B/W 8', width: 160, height: 120, durationMs: 8027, implemented: true },
   { engineIndex: 1, name: 'B/W 12', width: 160, height: 120, durationMs: 12000, implemented: true },
@@ -79,6 +89,12 @@ export const RXSSTV_MODE_CATALOG = [
   { engineIndex: 34, name: 'ML240', width: 640, height: 496, durationMs: 239716, implemented: true },
   { engineIndex: 35, name: 'ML280', width: 640, height: 496, durationMs: 280388, implemented: true },
   { engineIndex: 36, name: 'ML320', width: 640, height: 496, durationMs: 320068, implemented: true },
+  { engineIndex: 37, name: 'MP73-N', width: 320, height: 256, durationMs: 72960, implemented: true },
+  { engineIndex: 38, name: 'MP110-N', width: 320, height: 256, durationMs: 109824, implemented: true },
+  { engineIndex: 39, name: 'MP140-N', width: 320, height: 256, durationMs: 139520, implemented: true },
+  { engineIndex: 40, name: 'MC110-N', width: 320, height: 256, durationMs: 109696, implemented: true },
+  { engineIndex: 41, name: 'MC140-N', width: 320, height: 256, durationMs: 140416, implemented: true },
+  { engineIndex: 42, name: 'MC180-N', width: 320, height: 256, durationMs: 180352, implemented: true },
 ];
 
 /**
@@ -374,6 +390,48 @@ function mpMode(visCode, name, imageDurationMs) {
   };
 }
 
+// MMSSTV narrow modes use FSK mode identification, 1900-Hz line sync and a
+// compressed 2044..2300-Hz image deviation.
+function narrowMpMode(key, fskCode, name, scanMs, bpfLow, bpfHigh) {
+  const syncMs = 10;
+  const line = [
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'YODD' },
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'Cr' },
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'Cb' },
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'YEVEN' },
+    { type: SegType.SYNC, durationMs: syncMs, freq: FREQ.NARROW_SYNC },
+  ];
+  return {
+    visCode: key, fskCode, name, width: 320, height: 256, dataLines: 128,
+    colorSpace: ColorSpace.YUV, family: 'mn', lineSegments: line,
+    lineDurationMs: lineDuration(line), needsInitialSync: false,
+    syncAtLineStart: false, firstScanAfterVisMs: 0,
+    syncToFirstScanMs: syncMs, pairedLines: true, narrow: true,
+    syncFreq: FREQ.NARROW_SYNC, frequencyLow: FREQ.NARROW_BLACK,
+    frequencyHigh: FREQ.NARROW_WHITE, bpfLow, bpfHigh,
+  };
+}
+
+function narrowMcMode(key, fskCode, name, scanMs, bpfLow, bpfHigh) {
+  const syncMs = 8, porchMs = 0.5;
+  const line = [
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'R' },
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'G' },
+    { type: SegType.SCAN, durationMs: scanMs, channel: 'B' },
+    { type: SegType.SYNC, durationMs: syncMs, freq: FREQ.NARROW_SYNC },
+    { type: SegType.PORCH, durationMs: porchMs, freq: FREQ.NARROW_BLACK },
+  ];
+  return {
+    visCode: key, fskCode, name, width: 320, height: 256,
+    colorSpace: ColorSpace.RGB, family: 'mc', lineSegments: line,
+    lineDurationMs: lineDuration(line), needsInitialSync: false,
+    syncAtLineStart: false, firstScanAfterVisMs: 0,
+    syncToFirstScanMs: syncMs + porchMs, narrow: true,
+    syncFreq: FREQ.NARROW_SYNC, frequencyLow: FREQ.NARROW_BLACK,
+    frequencyHigh: FREQ.NARROW_WHITE, bpfLow, bpfHigh,
+  };
+}
+
 // VIS 码(十进制)。来源:公开 SSTV 规范。
 // Martin1=44(0x2C) Martin2=40(0x28)
 // Scottie1=60(0x3C) Scottie2=56(0x38) ScottieDX=76(0x4C)
@@ -417,6 +475,12 @@ export const MODES = {
   0x8623: mrMode(0x8623, 'ML240', 640, 496, 239716),
   0x8923: mrMode(0x8923, 'ML280', 640, 496, 280388),
   0x8a23: mrMode(0x8a23, 'ML320', 640, 496, 320068),
+  0x1022d: narrowMpMode(0x1022d, 0x02, 'MP73-N', 140, 1600, 2500),
+  0x1042d: narrowMpMode(0x1042d, 0x04, 'MP110-N', 212, 1600, 2500),
+  0x1052d: narrowMpMode(0x1052d, 0x05, 'MP140-N', 270, 1700, 2400),
+  0x1142d: narrowMcMode(0x1142d, 0x14, 'MC110-N', 140, 1600, 2500),
+  0x1152d: narrowMcMode(0x1152d, 0x15, 'MC140-N', 180, 1650, 2500),
+  0x1162d: narrowMcMode(0x1162d, 0x16, 'MC180-N', 232, 1700, 2400),
 };
 
 // Scottie S1 别名(指向 Scottie 1)
@@ -427,8 +491,7 @@ export function getMode(visCode) {
 }
 
 export function listModes() {
-  // 返回 UI 列表(跳过别名键)
-  return Object.values(MODES).filter(m => typeof m.visCode === 'number');
+  return Object.values(MODES).filter(m => typeof m.visCode === 'number' && !m.aliasOf);
 }
 
 // 默认采样率(生成与解码统一)
