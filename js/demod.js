@@ -117,6 +117,127 @@ function convolve(samples, h) {
   return out;
 }
 
+const basebandFilterCache = new Map();
+
+function besselI0(x) {
+  let sum = 1;
+  let term = 1;
+  const half = x * 0.5;
+  for (let k = 1; k < 24; k++) {
+    term *= (half / k) ** 2;
+    sum += term;
+    if (term < sum * 1e-12) break;
+  }
+  return sum;
+}
+
+/**
+ * Roughly 2-ms Kaiser low-pass used after complex frequency translation.
+ * The cutoff is the half-width of the selected RF passband.
+ */
+export function makeBasebandLowpass(sr, cutoffHz, durationMs = 2, beta = 5) {
+  const cutoff = Math.max(50, Math.min(sr * 0.45, Number(cutoffHz) || 900));
+  const taps = Math.max(15, Math.round(sr * durationMs / 1000) | 1);
+  const key = `${sr}:${cutoff.toFixed(3)}:${taps}:${beta}`;
+  const cached = basebandFilterCache.get(key);
+  if (cached) return cached;
+
+  const h = new Float64Array(taps);
+  const mid = (taps - 1) / 2;
+  const i0Beta = besselI0(beta);
+  let sum = 0;
+  for (let i = 0; i < taps; i++) {
+    const n = i - mid;
+    const ratio = mid ? n / mid : 0;
+    const window = besselI0(beta * Math.sqrt(Math.max(0, 1 - ratio * ratio))) / i0Beta;
+    const sinc = n === 0
+      ? 2 * cutoff / sr
+      : Math.sin(2 * Math.PI * cutoff * n / sr) / (Math.PI * n);
+    h[i] = sinc * window;
+    sum += h[i];
+  }
+  if (Math.abs(sum) > 1e-12) {
+    for (let i = 0; i < h.length; i++) h[i] /= sum;
+  }
+  basebandFilterCache.set(key, h);
+  return h;
+}
+
+/**
+ * Native-rate complex-baseband FM demodulator.
+ *
+ * Real PCM is mixed by exp(-j*2*pi*center*t), low-pass filtered in I/Q, then
+ * converted to instantaneous frequency by the phase difference of adjacent
+ * complex samples. The selected RF interval controls both mixer center and
+ * baseband cutoff.
+ */
+export function demodulatePhase(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
+  if (!Number.isFinite(sr) || sr <= 0) throw new Error('Invalid sample rate');
+  const requestedLow = Number(options.baseband?.lowHz ?? options.basebandLowHz ?? 1000);
+  const requestedHigh = Number(options.baseband?.highHz ?? options.basebandHighHz ?? 2800);
+  const nyquistLimit = Math.max(200, sr * 0.5 - 50);
+  const lowHz = Math.max(50, Math.min(nyquistLimit - 100, requestedLow));
+  const highHz = Math.max(lowHz + 100, Math.min(nyquistLimit, requestedHigh));
+  const centerHz = (lowHz + highHz) * 0.5;
+  const cutoffHz = (highHz - lowHz) * 0.5;
+  const h = makeBasebandLowpass(sr, cutoffHz, options.filterDurationMs ?? 2, options.kaiserBeta ?? 5);
+  const taps = h.length;
+  const groupDelaySamples = (taps - 1) / 2;
+  const ringRe = new Float64Array(taps);
+  const ringIm = new Float64Array(taps);
+  const freq = new Float32Array(samples.length);
+
+  const omega = 2 * Math.PI * centerHz / sr;
+  const stepRe = Math.cos(omega);
+  const stepIm = -Math.sin(omega);
+  let oscRe = 1, oscIm = 0;
+  let pos = 0;
+  let previousRe = 0, previousIm = 0;
+  let previousFrequency = centerHz;
+
+  for (let i = 0; i < samples.length; i++) {
+    const sample = Number.isFinite(samples[i]) ? samples[i] : 0;
+    ringRe[pos] = sample * oscRe;
+    ringIm[pos] = sample * oscIm;
+
+    let filteredRe = 0, filteredIm = 0;
+    let index = pos;
+    for (let k = 0; k < taps; k++) {
+      const coefficient = h[k];
+      filteredRe += coefficient * ringRe[index];
+      filteredIm += coefficient * ringIm[index];
+      if (--index < 0) index = taps - 1;
+    }
+
+    if (i > 0) {
+      const previousPower = previousRe * previousRe + previousIm * previousIm;
+      const power = filteredRe * filteredRe + filteredIm * filteredIm;
+      if (previousPower * power > 1e-20) {
+        const cross = filteredIm * previousRe - filteredRe * previousIm;
+        const dot = filteredRe * previousRe + filteredIm * previousIm;
+        const value = centerHz + Math.atan2(cross, dot) * sr / (2 * Math.PI);
+        if (Number.isFinite(value)) previousFrequency = Math.max(lowHz, Math.min(highHz, value));
+      }
+    }
+    freq[i] = previousFrequency;
+    previousRe = filteredRe;
+    previousIm = filteredIm;
+
+    pos++;
+    if (pos === taps) pos = 0;
+    const nextRe = oscRe * stepRe - oscIm * stepIm;
+    oscIm = oscRe * stepIm + oscIm * stepRe;
+    oscRe = nextRe;
+    if ((i & 4095) === 4095) {
+      const magnitude = Math.hypot(oscRe, oscIm) || 1;
+      oscRe /= magnitude;
+      oscIm /= magnitude;
+    }
+  }
+
+  return { freq, groupDelaySamples, centerHz, lowHz, highHz, taps };
+}
+
 /**
  * FM 解调:返回与样本等长的瞬时频率数组 freq[](Hz)。
  *
@@ -133,7 +254,7 @@ function convolve(samples, h) {
 export function demodulate(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
   if (options.engine === 'mmsstv') return demodulateMmsstv(samples, sr, options);
   // 1. 可选带通与自适应线增强。BPF 默认开启以保持原行为；LMS 默认关闭。
-  let filt = options.bpf === false ? samples : convolve(samples, makeBandpass(sr));
+  let filt = options.bpf === true ? convolve(samples, makeBandpass(sr)) : samples;
   if (options.lms === true) filt = lmsAdaptiveLineEnhance(filt, sr, options.lmsOptions);
 
   const n = filt.length;
@@ -210,7 +331,7 @@ export function demodulate(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
 export function demodulateMmsstv(samples, sr = DEFAULT_SAMPLE_RATE, options = {}) {
   const narrow = options.narrow === true;
   let processor = null;
-  if (options.bpf !== false) {
+  if (options.bpf === true) {
     processor = new StreamingFIR(makeMmsstvBandpass(sr, {
       quality: options.bpfQuality ?? 2,
       // MMSSTV uses HBPFS (about 400..2500 Hz) while searching so that the
@@ -300,9 +421,10 @@ function movingAverage(arr, len) {
  * (MP3 解调的瞬时频率在 SYNC 段单样本抖动可达 ±400Hz),改用
  * "滑动窗口内落在 1200Hz 容差的样本占比 ≥ 阈值"定位 SYNC 区段。
  */
-export function findSyncPulses(freq, sr, minSyncMs = 4.0, ratioThresh = 0.25, targetHz = FREQ.SYNC) {
+export function findSyncPulses(freq, sr, minSyncMs = 4.0, ratioThresh = 0.25, targetHz = FREQ.SYNC, toleranceHz = 60) {
   const minLen = Math.floor(minSyncMs * sr / 1000);
-  const lo = targetHz - 60, hi = targetHz + 60;
+  const tolerance = Math.max(10, Number(toleranceHz) || 60);
+  const lo = targetHz - tolerance, hi = targetHz + tolerance;
   const winMs = 5;  // 占比判定窗口(大于 SYNC 抖动相关时间)
   const win = Math.max(1, Math.floor(winMs * sr / 1000));
   // ratioThresh:窗口内落在 1200Hz 容差的样本占比阈值。

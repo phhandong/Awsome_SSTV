@@ -56,6 +56,7 @@ for (const key of [2, 0x1022d]) {
   assert(locked, `${mode.name} did not emit locked`);
   assert(rows >= mode.height * 0.95, `${mode.name} emitted too few rows: ${rows}`);
   assert(result.mode === mode, `${mode.name} stream decoded as ${result.mode.name}`);
+  assert(result.dsp.demodulator === 'phase', `${mode.name} stream did not use native phase demodulation`);
 }
 
 // MMSSTV remote start: identify a mode from sync intervals even when one
@@ -85,4 +86,14 @@ for (const options of [{}, { mode: noVisMode.visCode }]) {
   assert(result.mode === noVisMode, `no-VIS ${expectedSource} decode selected ${result.mode.name}`);
 }
 
-console.log('Streaming checks passed: resampler, CPLL, VIS/FSK, sync auto-start and manual start');
+const changingRateReceiver = new SSTVReceiver({ emitFrames: false });
+changingRateReceiver.push(new Float32Array(32), 48000);
+let rateChangeRejected = false;
+try {
+  changingRateReceiver.push(new Float32Array(32), 44100);
+} catch (error) {
+  rateChangeRejected = /Sample rate changed/.test(error.message);
+}
+assert(rateChangeRejected, 'streaming receiver accepted a mid-session sample-rate change');
+
+console.log('Streaming checks passed: native PCM, resampler, CPLL, VIS/FSK, sync/manual start and fixed sample rate');

@@ -33,6 +33,14 @@ const browser = await chromium.launch({
   args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream'],
 });
 
+async function clickVisibleScrim(page) {
+  const box = await page.locator('#navScrim').boundingBox();
+  if (!box) throw new Error('navigation scrim has no layout');
+  // On narrow viewports the drawer covers the scrim center. Click its visible
+  // right edge, matching where a user can actually dismiss the drawer.
+  await page.mouse.click(box.x + box.width - 2, box.y + box.height / 2);
+}
+
 async function verifyViewport(name, viewport) {
   const context = await browser.newContext({ viewport, permissions: ['microphone'] });
   const page = await context.newPage();
@@ -40,6 +48,54 @@ async function verifyViewport(name, viewport) {
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('#micStartBtn');
+
+  const decoderShell = await page.evaluate(() => ({
+    page: document.body.dataset.page,
+    drawerHidden: document.getElementById('navDrawer').getAttribute('aria-hidden'),
+    navExpanded: document.getElementById('navToggle').getAttribute('aria-expanded'),
+    decodeButtons: [...document.querySelectorAll('.decode-actions button')].map(button => button.id),
+    hasEncoder: !!document.getElementById('encodeBtn'),
+    meterCells: document.querySelectorAll('#receiverMeter .signal-cell').length,
+    deerflow: document.querySelector('.deerflow-mark')?.href,
+    fontSizes: {
+      body: parseFloat(getComputedStyle(document.body).fontSize),
+      intro: parseFloat(getComputedStyle(document.querySelector('.console-intro > div:first-child > p:last-child')).fontSize),
+      command: parseFloat(getComputedStyle(document.querySelector('.command-btn')).fontSize),
+      micro: parseFloat(getComputedStyle(document.querySelector('.module-label span')).fontSize),
+      panelTitle: parseFloat(getComputedStyle(document.querySelector('.panel-heading h2')).fontSize),
+    },
+  }));
+  if (decoderShell.page !== 'decoder' || decoderShell.drawerHidden !== 'true' || decoderShell.navExpanded !== 'false') {
+    throw new Error(`${name}: decoder shell or hidden navigation is invalid`);
+  }
+  if (decoderShell.decodeButtons.join('|') !== 'realtimeDecodeBtn|decodeUploadedBtn' || decoderShell.hasEncoder) {
+    throw new Error(`${name}: decoder does not expose exactly the two requested commands`);
+  }
+  if (decoderShell.meterCells !== 12 || decoderShell.deerflow !== 'https://deerflow.tech/') {
+    throw new Error(`${name}: signal meter or design credit is missing`);
+  }
+  if (decoderShell.fontSizes.body < 16 || decoderShell.fontSizes.intro < 15 ||
+      decoderShell.fontSizes.command < 15 || decoderShell.fontSizes.micro < 11 ||
+      decoderShell.fontSizes.panelTitle < 16) {
+    throw new Error(`${name}: console type remains too small ${JSON.stringify(decoderShell.fontSizes)}`);
+  }
+  await page.click('#navToggle');
+  if (await page.getAttribute('#navDrawer', 'aria-hidden') !== 'false') throw new Error(`${name}: navigation did not open`);
+  await clickVisibleScrim(page);
+  if (await page.getAttribute('#navDrawer', 'aria-hidden') !== 'true') throw new Error(`${name}: navigation did not close`);
+
+  const meterPaint = await page.evaluate(async () => {
+    const app = await import('./js/app.js');
+    app.updateSignalMeter(75);
+    const meter = document.getElementById('receiverMeter');
+    const active = meter.querySelectorAll('.signal-cell.is-active').length;
+    const value = meter.getAttribute('aria-valuenow');
+    app.updateSignalMeter(0);
+    return { active, value, reset: meter.querySelectorAll('.signal-cell.is-active').length };
+  });
+  if (meterPaint.active !== 9 || meterPaint.value !== '75' || meterPaint.reset !== 0) {
+    throw new Error(`${name}: segmented signal meter did not respond`);
+  }
 
   const decoded = await page.evaluate(async () => {
     const [{ encode }, { getMode }, { WebSSTVDecoder }, ui, app] = await Promise.all([
@@ -159,12 +215,77 @@ async function verifyViewport(name, viewport) {
     if (reloaded.start !== 0 || reloaded.end <= 0 || reloaded.width <= 7 || reloaded.currentTime !== '0:00') {
       throw new Error('desktop: re-upload did not redraw waveform and reset timeline state');
     }
+
+    // Exercise the actual offline UI path with a native-rate PD120 recording.
+    // Offline decode must request only the final Worker frame; provisional
+    // frames repeatedly decode an ever-growing 640x496 prefix and used to turn
+    // this roughly three-second decode into a forty-second operation.
+    await page.setInputFiles(
+      '#wavInput',
+      join(ROOT, 'asset', 'voicerecord', 'processed', 'PD120_10041145.mp3')
+    );
+    await page.waitForFunction(
+      () => Number(document.getElementById('decodeEndSec').value) > 120,
+      null,
+      { timeout: 30000 }
+    );
+    const pdStartedAt = Date.now();
+    await page.click('#decodeUploadedBtn');
+    await page.waitForFunction(() => {
+      const panel = document.getElementById('offlineDecodeProgress');
+      const button = document.getElementById('decodeUploadedBtn');
+      return !panel.hidden && button.getAttribute('aria-busy') === 'true';
+    });
+    const pdProgressStarted = await page.evaluate(() => {
+      const panel = document.getElementById('offlineDecodeProgress');
+      const track = document.getElementById('offlineDecodeProgressBar');
+      return {
+        visible: !panel.hidden,
+        status: document.getElementById('offlineDecodeProgressText').textContent,
+        value: document.getElementById('offlineDecodeProgressValue').textContent,
+        ariaText: track.getAttribute('aria-valuetext'),
+      };
+    });
+    if (!pdProgressStarted.visible || !pdProgressStarted.status || !pdProgressStarted.ariaText) {
+      throw new Error(`desktop: offline progress did not start ${JSON.stringify(pdProgressStarted)}`);
+    }
+    await page.waitForFunction(() => {
+      const button = document.getElementById('decodeUploadedBtn');
+      return !button.classList.contains('loading') &&
+        document.getElementById('resultMeta').textContent.startsWith('PD120');
+    }, null, { timeout: 30000 });
+    const pdElapsedMs = Date.now() - pdStartedAt;
+    const pdDecoded = await page.evaluate(() => {
+      const canvas = document.getElementById('resultCanvas');
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      let sampleSum = 0;
+      for (let offset = 0; offset < pixels.length; offset += 4096) sampleSum += pixels[offset];
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        meta: document.getElementById('resultMeta').textContent,
+        rows: document.getElementById('receiverRows').textContent,
+        saveEnabled: !document.getElementById('saveImageBtn').disabled,
+        sampleSum,
+        progressComplete: document.getElementById('offlineDecodeProgress').classList.contains('is-complete'),
+        progressValue: document.getElementById('offlineDecodeProgressBar').getAttribute('aria-valuenow'),
+        buttonBusy: document.getElementById('decodeUploadedBtn').hasAttribute('aria-busy'),
+      };
+    });
+    if (pdDecoded.width !== 640 || pdDecoded.height !== 496 || pdDecoded.rows !== '496 / 496' ||
+        !pdDecoded.saveEnabled || pdDecoded.sampleSum <= 0 || !pdDecoded.progressComplete ||
+        pdDecoded.progressValue !== '100' || pdDecoded.buttonBusy) {
+      throw new Error(`desktop: PD120 offline decode failed ${JSON.stringify(pdDecoded)}`);
+    }
+    await page.waitForFunction(() => document.getElementById('offlineDecodeProgress').hidden, null, { timeout: 3000 });
+    console.log(`desktop: real PD120 offline decode ${pdElapsedMs}ms`);
   }
 
   await page.click('#micStartBtn');
   await page.waitForFunction(() => ['搜索信号', '已锁定'].includes(document.getElementById('receiverStatus').textContent));
   await page.click('#micStopBtn');
   await page.waitForFunction(() => document.getElementById('receiverStatus').textContent === '已停止');
+  if (await page.getAttribute('#receiverMeter', 'aria-valuenow') !== '0') throw new Error(`${name}: signal meter did not reset after stop`);
 
   const layout = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - window.innerWidth,
@@ -179,8 +300,39 @@ async function verifyViewport(name, viewport) {
   if (name === 'mobile') await page.locator('.decoder').scrollIntoViewIfNeeded();
   else await page.evaluate(() => window.scrollTo(0, 0));
   await page.screenshot({ path: `test-artifacts/${name}.png`, fullPage: false });
+
+  await page.goto(`http://127.0.0.1:${port}/encode.html`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#encodeBtn');
+  await page.waitForFunction(() => !document.getElementById('encodeBtn').disabled);
+  const encoderShell = await page.evaluate(() => ({
+    page: document.body.dataset.page,
+    hasDecoder: !!document.getElementById('wavDropzone') || !!document.getElementById('realtimeDecodeBtn'),
+    modeCount: document.getElementById('modeSelect').options.length,
+    drawerHidden: document.getElementById('navDrawer').getAttribute('aria-hidden'),
+    activeNav: document.querySelector('.nav-link.is-active')?.getAttribute('href'),
+    overflow: document.documentElement.scrollWidth - window.innerWidth,
+    clippedButtons: [...document.querySelectorAll('button')]
+      .filter(button => button.scrollWidth > button.clientWidth + 1)
+      .map(button => button.id || button.textContent.trim()),
+    canvas: { width: document.getElementById('srcCanvas').clientWidth, height: document.getElementById('srcCanvas').clientHeight },
+  }));
+  if (encoderShell.page !== 'encoder' || encoderShell.hasDecoder || encoderShell.modeCount !== 43) {
+    throw new Error(`${name}: encoder page did not initialize independently`);
+  }
+  if (encoderShell.drawerHidden !== 'true' || !encoderShell.activeNav?.endsWith('encode.html')) {
+    throw new Error(`${name}: encoder navigation state is invalid`);
+  }
+  if (encoderShell.overflow > 1 || encoderShell.clippedButtons.length) {
+    throw new Error(`${name}: encoder layout overflow/clipping ${encoderShell.overflow}px ${encoderShell.clippedButtons.join(',')}`);
+  }
+  if (encoderShell.canvas.width <= 0 || encoderShell.canvas.height <= 0) throw new Error(`${name}: encoder source canvas has no layout`);
+  await page.click('#navToggle');
+  if (await page.getAttribute('#navDrawer', 'aria-hidden') !== 'false') throw new Error(`${name}: encoder navigation did not open`);
+  await clickVisibleScrim(page);
+  await page.screenshot({ path: `test-artifacts/${name}-encode.png`, fullPage: false });
+  if (errors.length) throw new Error(`${name}: page errors after encoder load: ${errors.join('; ')}`);
   await context.close();
-  console.log(`${name}: ${viewport.width}x${viewport.height}, ${decoded.mode} ${decoded.width}x${decoded.height}, no overflow`);
+  console.log(`${name}: ${viewport.width}x${viewport.height}, RX/TX pages, ${decoded.mode} ${decoded.width}x${decoded.height}, no overflow`);
 }
 
 try {

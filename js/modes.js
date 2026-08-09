@@ -42,6 +42,7 @@ export const SegType = {
   SYNC: 'sync',            // 1200Hz 同步脉冲
   PORCH: 'porch',          // 1500Hz 黑电平(后沿/分隔)
   SYNC_PORCH: 'syncporch', // Scottie:同步后的短黑电平
+  SEPARATOR: 'separator',  // Robot chroma marker/separator
   SCAN: 'scan',            // 图像扫描,频率随像素亮度变化
 };
 
@@ -268,34 +269,58 @@ function bwMode(visCode, name, imageDurationMs, frontPorchMs, backPorchMs) {
   };
 }
 
-// ---- Robot 族(YUV,隔行双场 + Cr/Cb 逐行交替)----
-// Robot 36: 320x240,帧=2场(奇/偶行)。每行: SYNC(9) + porch(3) + Y(88) + sep porch(4.5) + 单色度(44)
-// 色度 Cr/Cb 逐行交替(行0发Cr,行1发Cb,行2发Cr...),所以行周期 ~148.5ms ≈ 150ms(实测吻合)。
-// 两行才传完一组 YCrCb。
+// ---- Robot family ----
+// Robot 36 compatibility path retained from the previous decoder. Its 1.5-ms
+// chroma porch is represented by the decoder scan guard, while chroma type is
+// selected by row parity rather than separator-marker detection.
 const ROBOT36_LINE = [
   { type: SegType.SYNC,  durationMs: 9.0,  freq: FREQ.SYNC },
   { type: SegType.PORCH, durationMs: 3.0,  freq: FREQ.BLACK },
   { type: SegType.SCAN,  durationMs: 88.0, channel: 'Y' },
-  { type: SegType.PORCH, durationMs: 4.5,  freq: FREQ.BLACK },  // separator porch
-  { type: SegType.SCAN,  durationMs: 44.0, channel: 'CHROMA' },  // Cr 或 Cb,逐行交替
+  { type: SegType.PORCH, durationMs: 4.5, freq: FREQ.BLACK },
+  { type: SegType.SCAN,  durationMs: 44.0, channel: 'CHROMA' },
 ];
 
-function robotMode(visCode, name, width, height, yMs, chromaMs) {
-  const line = ROBOT36_LINE.map(s => {
-    if (s.channel === 'Y') return { ...s, durationMs: yMs };
-    if (s.channel)         return { ...s, durationMs: chromaMs };
-    return s;
-  });
+function robot36Mode() {
   return {
-    visCode, name, width, height,
+    visCode: 8, name: 'Robot 36', width: 320, height: 240,
     colorSpace: ColorSpace.YUV, family: 'robot',
-    lineSegments: line,
-    lineDurationMs: lineDuration(line),
+    lineSegments: ROBOT36_LINE,
+    lineDurationMs: lineDuration(ROBOT36_LINE),
     needsInitialSync: false,
-    interlace: { fields: 2 },  // 奇场(y=0,2,4..) + 偶场(y=1,3,5..)
     syncAtLineStart: true,
     syncToFirstScanMs: 9.0 + 3.0,
-    chromaAlternate: true,  // Cr/Cb 逐行交替(行偶数发Cr,奇数发Cb)
+    linePll: true,
+    interlace: { fields: 2 },
+    chromaAlternate: true,
+    robot36Legacy: true,
+    syncPeriodMs: 150.0,
+  };
+}
+
+// Robot 72: complete Y, V (R-Y) and U (B-Y) on every 300-ms line.
+const ROBOT72_LINE = [
+  { type: SegType.SYNC, durationMs: 9.0, freq: FREQ.SYNC },
+  { type: SegType.PORCH, durationMs: 3.0, freq: FREQ.BLACK },
+  { type: SegType.SCAN, durationMs: 138.0, channel: 'Y' },
+  { type: SegType.SEPARATOR, durationMs: 4.5, freq: FREQ.BLACK },
+  { type: SegType.PORCH, durationMs: 1.5, freq: FREQ.VIS_START },
+  { type: SegType.SCAN, durationMs: 69.0, channel: 'Cr' },
+  { type: SegType.SEPARATOR, durationMs: 4.5, freq: FREQ.BLACK },
+  { type: SegType.PORCH, durationMs: 1.5, freq: FREQ.VIS_START },
+  { type: SegType.SCAN, durationMs: 69.0, channel: 'Cb' },
+];
+
+function robot72Mode() {
+  return {
+    visCode: 12, name: 'Robot 72', width: 320, height: 240,
+    colorSpace: ColorSpace.YUV, family: 'robot', lineYuv: true,
+    lineSegments: ROBOT72_LINE,
+    lineDurationMs: lineDuration(ROBOT72_LINE),
+    needsInitialSync: false,
+    syncAtLineStart: true,
+    syncToFirstScanMs: 9.0 + 3.0,
+    linePll: true,
   };
 }
 
@@ -453,8 +478,8 @@ export const MODES = {
   60: scottieMode(60, 'Scottie 1', 138.240),
   56: scottieMode(56, 'Scottie 2', 88.064),
   76: scottieMode(76, 'Scottie DX', 345.600),
-  8:  robotMode(8,  'Robot 36', 320, 240, 88.0, 44.0),
-  12: robotMode(12, 'Robot 72', 320, 240, 138.0, 69.0),
+  8:  robot36Mode(),
+  12: robot72Mode(),
   93: pdMode(93, 'PD50', 320, 256, 128, 49684, 2.30),
   99: pdMode(99, 'PD90', 320, 256, 128, 89989, 2.30),
   95: pdMode(95, 'PD120', 640, 496, 248, 126103, 2.30),

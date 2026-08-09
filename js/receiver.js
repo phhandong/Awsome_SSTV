@@ -20,7 +20,7 @@ export class SSTVReceiver {
   constructor(options = {}) {
     this.options = { ...options, dsp: { engine: 'mmsstv', ...(options.dsp || {}) } };
     this.listeners = new Map();
-    this.resampler = new StreamingResampler(options.sampleRate || MMSSTV_SAMPLE_RATE);
+    this.resampler = new StreamingResampler(MMSSTV_SAMPLE_RATE);
     this.reset();
   }
 
@@ -40,6 +40,9 @@ export class SSTVReceiver {
     this.resampler.reset();
     this.chunks = [];
     this.length = 0;
+    this.nativeSampleRate = 0;
+    this.acquisitionChunks = [];
+    this.acquisitionLength = 0;
     this.mode = null;
     this.header = null;
     this.rows = 0;
@@ -51,17 +54,28 @@ export class SSTVReceiver {
 
   push(samples, sampleRate) {
     if (this.ended) throw new Error('Receiver has ended; call reset() before push()');
+    if (!(samples instanceof Float32Array)) samples = Float32Array.from(samples || []);
+    if (!samples.length) return;
+    if (!this.nativeSampleRate) this.nativeSampleRate = sampleRate;
+    if (this.nativeSampleRate !== sampleRate) {
+      throw new Error(`Sample rate changed during receive: ${this.nativeSampleRate} -> ${sampleRate}`);
+    }
+    const nativeChunk = samples.slice();
+    this.chunks.push(nativeChunk);
+    this.length += nativeChunk.length;
+
     const chunk = this.resampler.process(samples, sampleRate);
-    if (!chunk.length) return;
-    this.chunks.push(chunk);
-    this.length += chunk.length;
+    if (chunk.length) {
+      this.acquisitionChunks.push(chunk);
+      this.acquisitionLength += chunk.length;
+    }
 
     let square = 0;
-    for (let i = 0; i < chunk.length; i++) square += chunk[i] * chunk[i];
-    this.emit('level', { rms: Math.sqrt(square / chunk.length), samples: this.length });
+    for (let i = 0; i < nativeChunk.length; i++) square += nativeChunk[i] * nativeChunk[i];
+    this.emit('level', { rms: Math.sqrt(square / nativeChunk.length), samples: this.length });
 
-    if (!this.mode && this.length - this.lastProbeLength >= this.resampler.outputRate / 4) {
-      this.lastProbeLength = this.length;
+    if (!this.mode && this.acquisitionLength - this.lastProbeLength >= this.resampler.outputRate / 4) {
+      this.lastProbeLength = this.acquisitionLength;
       this.probeAcquisition();
     }
     if (this.mode) this.reportRows();
@@ -70,17 +84,19 @@ export class SSTVReceiver {
   probeAcquisition() {
     const forcedMode = resolveReceiveMode(this.options.mode);
     if (forcedMode) {
+      const inputOffset = Math.max(0, this.options.startSample || 0);
       this.lock(forcedMode, {
-        source: 'manual', mode: forcedMode, sampleOffset: Math.max(0, this.options.startSample || 0),
+        source: 'manual', mode: forcedMode,
+        sampleOffset: Math.round(inputOffset * this.resampler.outputRate / this.nativeSampleRate),
       });
       return;
     }
-    const maxProbe = Math.min(this.length, this.resampler.outputRate * 7);
+    const maxProbe = Math.min(this.acquisitionLength, this.resampler.outputRate * 7);
     if (maxProbe < this.resampler.outputRate / 2) return;
-    const pcm = concatChunks(this.chunks, this.length).subarray(0, maxProbe);
+    const pcm = concatChunks(this.acquisitionChunks, this.acquisitionLength).subarray(0, maxProbe);
     const dsp = this.options.dsp || {};
     const freq = demodulate(pcm, this.resampler.outputRate, {
-      bpf: dsp.bpf !== false,
+      bpf: dsp.bpf === true,
       lms: dsp.lms === true,
       lmsOptions: dsp.lmsOptions,
       afc: dsp.afc === true,
@@ -110,8 +126,13 @@ export class SSTVReceiver {
 
   reportRows() {
     const lineCount = this.mode.dataLines || this.mode.height;
-    const elapsed = Math.max(0, this.length - this.header.sampleOffset);
-    const dataRows = Math.min(lineCount, Math.floor(elapsed / (this.mode.lineDurationMs * this.resampler.outputRate / 1000)));
+    const elapsed = Math.max(0, this.acquisitionLength - this.header.sampleOffset);
+    // Robot 36's retained legacy scan layout totals 148.5 ms, while real sync
+    // pulses and frame progress use the standard 150-ms cadence. Reporting on
+    // the shorter scan layout marks the frame complete about 360 ms too early
+    // and suppresses its final partial updates.
+    const rowPeriodMs = this.mode.syncPeriodMs || this.mode.lineDurationMs;
+    const dataRows = Math.min(lineCount, Math.floor(elapsed / (rowPeriodMs * this.resampler.outputRate / 1000)));
     const displayRows = this.mode.pairedLines ? Math.min(this.mode.height, dataRows * 2) : Math.min(this.mode.height, dataRows);
     if (displayRows <= this.rows) return;
     const previous = this.rows;
@@ -128,7 +149,7 @@ export class SSTVReceiver {
 
   renderPartial() {
     try {
-      const result = decode(concatChunks(this.chunks, this.length), this.resampler.outputRate, {
+      const result = decode(concatChunks(this.chunks, this.length), this.nativeSampleRate, {
         ...this.options,
         dsp: this.options.dsp,
       });
@@ -142,7 +163,7 @@ export class SSTVReceiver {
     if (this.ended) return null;
     this.ended = true;
     try {
-      const result = decode(concatChunks(this.chunks, this.length), this.resampler.outputRate, {
+      const result = decode(concatChunks(this.chunks, this.length), this.nativeSampleRate, {
         ...this.options,
         dsp: this.options.dsp,
         onProgress: this.options.onProgress,

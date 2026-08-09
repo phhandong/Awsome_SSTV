@@ -3,192 +3,166 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="在浏览器中直接进行 SSTV（慢扫描电视）编解码，支持 Martin、Scottie、Robot 等多种模式。纯前端实现，无需后端服务器。">
-  <meta name="keywords" content="SSTV, 慢扫描电视, 业余无线电, 图像传输, Martin, Scottie, Robot">
-  <meta name="author" content="Awesome SSTV">
-  <meta name="theme-color" content="#4fd1c5">
-
-  <!-- Open Graph / Facebook -->
-  <meta property="og:type" content="website">
-  <meta property="og:title" content="Awesome SSTV - 浏览器内慢扫描电视编解码">
-  <meta property="og:description" content="支持 Martin、Scottie、Robot 等多种 SSTV 模式的在线编解码工具">
-
-  <!-- Twitter -->
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Awesome SSTV - 浏览器内慢扫描电视编解码">
-
-  <title>Awesome SSTV · 浏览器内慢扫描电视编解码</title>
-
-  <!-- Preload critical resources -->
-  <link rel="preload" href="./css/style.css" as="style">
-  <link rel="preload" href="./js/app.js" as="script">
-
+  <meta name="description" content="浏览器内 SSTV 慢扫描电视解码终端，支持文件与实时接收。">
+  <meta name="theme-color" content="#07110f">
+  <title>Awesome SSTV · 解码终端</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./css/style.css">
+  <link rel="stylesheet" href="./css/radio-console.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
-
-  <!-- Performance optimization -->
-  <link rel="dns-prefetch" href="https://fonts.googleapis.com">
 </head>
-<body>
-  <header class="topbar" role="banner">
-    <div class="brand">
-      <span class="logo" role="img" aria-label="Radio antenna">📡</span>
-      <div>
-        <h1>Awesome SSTV</h1>
-      </div>
+<body data-page="decoder">
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <button id="navToggle" class="nav-toggle" type="button" aria-expanded="false" aria-controls="navDrawer" aria-label="打开导航">
+    <span></span><span></span><span></span>
+  </button>
+  <div id="navScrim" class="nav-scrim" hidden></div>
+  <nav id="navDrawer" class="nav-drawer" aria-label="主导航" aria-hidden="true">
+    <div class="nav-ident">
+      <span class="nav-kicker">SSTV FIELD UNIT</span>
+      <strong>AWESOME<br>SSTV</strong>
+      <small>WEB TRANSCEIVER / 01</small>
     </div>
+    <a class="nav-link is-active" href="./index.html" aria-current="page"><span>01</span>解码终端 <b>RX</b></a>
+    <a class="nav-link" href="./encode.html"><span>02</span>编码终端 <b>TX</b></a>
+    <div class="nav-foot"><i></i> LOCAL DSP · NO UPLINK</div>
+  </nav>
+
+  <header class="topbar radio-topbar" role="banner">
+    <a class="brand" href="./index.html" aria-label="Awesome SSTV 解码首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>AWESOME SSTV</strong><small>Slow Scan Signal Lab</small></span>
+    </a>
     <div class="topbar-actions">
-      <label class="mode-select">
-        <span>模式</span>
+      <label class="mode-select console-select">
+        <span>RX MODE</span>
         <select id="modeSelect" aria-label="选择 SSTV 模式"></select>
       </label>
       <label class="auto-receive" title="自动尝试 VIS、FSK 和同步脉冲识别模式">
         <input type="checkbox" id="autoReceive" checked aria-label="启用自动接收模式">
-        <span>自动接收</span>
+        <span>AUTO</span>
       </label>
-      <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色/暗色主题">🌙</button>
+      <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色或暗色主题">🌙</button>
     </div>
   </header>
 
-  <main class="grid" role="main">
-    <!-- 生成器 -->
-    <section class="panel encoder" aria-labelledby="encoder-title">
-      <h2 id="encoder-title"><span class="dot enc" aria-hidden="true"></span>生成器 Encoder</h2>
-
-      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="上传图片">
-        <canvas id="srcCanvas" width="320" height="256" aria-label="源图像预览"></canvas>
-        <div class="dropzone-hint" id="dropHint">拖入图片 或 点击选择</div>
-        <input type="file" id="fileInput" accept="image/*" hidden aria-label="选择图片文件">
+  <main class="radio-shell" role="main">
+    <section class="console-intro" aria-labelledby="page-title">
+      <div>
+        <p class="eyebrow"><span></span> RX / SIGNAL RECOVERY</p>
+        <h1 id="page-title">慢扫描接收终端</h1>
+        <p>捕获音频载波，校准同步脉冲，在浏览器本地重建图像。</p>
       </div>
-
-      <div class="mode-info" id="modeInfo" role="status" aria-live="polite"></div>
-
-      <div class="btn-row">
-        <button id="useSampleBtn" class="btn ghost" aria-label="使用示例图片">用示例图</button>
-        <button id="encodeBtn" class="btn primary" disabled aria-label="生成 SSTV 音频">▶ 生成音频</button>
-      </div>
-      <div class="btn-row">
-        <button id="playBtn" class="btn" disabled aria-label="播放音频">▶ 播放</button>
-        <button id="downloadBtn" class="btn" disabled aria-label="下载 WAV 文件">⬇ 下载 WAV</button>
-        <button id="selfTestBtn" class="btn accent" disabled aria-label="执行自测闭环">⟲ 自测闭环</button>
-      </div>
-
-      <div class="progress" id="encProgress" hidden role="progressbar" aria-label="生成进度">
-        <div class="bar"></div>
-      </div>
-
-      <div class="waveform-wrap">
-        <div class="label">合成音频波形</div>
-        <canvas id="waveform" aria-label="音频波形可视化"></canvas>
-      </div>
-
-      <div class="spectrum-wrap">
-        <div class="label">频谱瀑布图 <span class="freq-range">700–2700 Hz</span></div>
-        <canvas id="encoderSpectrum" aria-label="编码器频谱瀑布图"></canvas>
+      <div class="frequency-readout" aria-label="默认复基带范围">
+        <small>BASEBAND</small><strong>1.000 — 2.800</strong><span>kHz</span>
       </div>
     </section>
 
-    <!-- 解码器 -->
-    <section class="panel decoder" aria-labelledby="decoder-title">
-      <h2 id="decoder-title"><span class="dot dec" aria-hidden="true"></span>解码器 Decoder</h2>
-
-      <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
-        <div class="dropzone-hint">拖入 WAV / MP3 文件 或 点击选择</div>
-        <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
+    <section class="panel decoder radio-panel" aria-labelledby="decoder-title">
+      <div class="panel-heading">
+        <div><span class="panel-index">RX–01</span><h2 id="decoder-title">SIGNAL INPUT</h2></div>
+        <span class="panel-state"><i></i> STANDBY</span>
       </div>
 
-      <div class="live-receiver" aria-label="麦克风实时接收">
-        <div class="live-toolbar">
-          <div class="live-title">
-            <span class="live-indicator" id="liveIndicator" aria-hidden="true"></span>
-            <span>实时接收</span>
-          </div>
-          <div class="btn-row compact">
-            <button id="micStartBtn" class="btn" aria-label="开始麦克风接收">● 开始</button>
-            <button id="micStopBtn" class="btn ghost" aria-label="停止麦克风接收" disabled>■ 停止</button>
+      <div class="input-deck">
+        <div class="console-module upload-module">
+          <div class="module-label"><span>FILE CHANNEL</span><b>离线音频</b></div>
+          <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
+            <span class="upload-glyph" aria-hidden="true">⇧</span>
+            <div class="dropzone-hint"><strong>载入音频</strong><small>WAV / MP3 · 拖放或点击</small></div>
+            <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
           </div>
         </div>
-        <div class="receiver-meter" aria-hidden="true"><span id="receiverLevel"></span></div>
-        <div class="receiver-telemetry" role="status" aria-live="polite">
-          <span><small>状态</small><strong id="receiverStatus">待机</strong></span>
-          <span><small>模式</small><strong id="receiverMode">--</strong></span>
-          <span><small>AFC</small><strong id="receiverAfc">--</strong></span>
-          <span><small>进度</small><strong id="receiverRows">0 / 0</strong></span>
+
+        <div class="console-module live-receiver" aria-label="实时信号接收">
+          <div class="live-toolbar">
+            <div class="live-title"><span class="live-indicator" id="liveIndicator" aria-hidden="true"></span><span>LIVE CHANNEL</span></div>
+            <div class="btn-row compact">
+              <button id="micStartBtn" class="btn mini" aria-label="开始麦克风接收">● 接收</button>
+              <button id="micStopBtn" class="btn mini ghost" aria-label="停止麦克风接收" disabled>■ 停止</button>
+            </div>
+          </div>
+          <div class="signal-meter-wrap">
+            <div class="signal-meter-label"><span>INPUT STRENGTH</span><output id="receiverLevelText">0%</output></div>
+            <div id="receiverMeter" class="signal-meter" role="progressbar" aria-label="实时信号强度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+            </div>
+          </div>
+          <div class="receiver-telemetry" role="status" aria-live="polite">
+            <span><small>STATUS</small><strong id="receiverStatus">待机</strong></span>
+            <span><small>MODE</small><strong id="receiverMode">--</strong></span>
+            <span><small>AFC</small><strong id="receiverAfc">--</strong></span>
+            <span><small>ROWS</small><strong id="receiverRows">0 / 0</strong></span>
+          </div>
         </div>
       </div>
 
       <div class="audio-player-wrapper" id="audioPlayerWrapper" hidden>
         <div class="audio-player-controls">
-          <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放/暂停">▶</button>
+          <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放或暂停">▶</button>
           <div class="audio-timeline-container">
             <canvas id="spectrum" class="audio-spectrum-bg" aria-label="频谱瀑布图"></canvas>
             <canvas id="audioWaveform" class="audio-waveform" aria-label="音频波形时间轴"></canvas>
             <div class="audio-timeline-overlay">
-              <div class="audio-selection" id="audioSelection">
-                <div class="audio-selection-handle audio-selection-start" data-handle="start"></div>
-                <div class="audio-selection-handle audio-selection-end" data-handle="end"></div>
-              </div>
+              <div class="audio-selection" id="audioSelection"><div class="audio-selection-handle audio-selection-start" data-handle="start"></div><div class="audio-selection-handle audio-selection-end" data-handle="end"></div></div>
               <div class="audio-playhead" id="audioPlayhead"></div>
             </div>
           </div>
-          <div class="audio-time-display">
-            <span id="audioCurrentTime">0:00</span>
-            <span class="audio-time-separator">/</span>
-            <span id="audioDuration">0:00</span>
-          </div>
+          <div class="audio-time-display"><span id="audioCurrentTime">0:00</span><span class="audio-time-separator">/</span><span id="audioDuration">0:00</span></div>
         </div>
         <div class="audio-selection-info">
           <span class="range-inputs">
-            <label>开始 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
-            <label>结束 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+            <label>起点 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+            <label>终点 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
           </span>
-          <button id="resetSelectionBtn" class="btn-link">重置选区</button>
+          <button id="resetSelectionBtn" class="btn-link">重置区间</button>
         </div>
-        <p id="rangeError" class="range-error" role="alert" hidden>范围必须满足 0 <= 开始 < 结束 <= 音频总时长。</p>
+        <p id="rangeError" class="range-error" role="alert" hidden>范围必须满足 0 ≤ 起点 &lt; 终点 ≤ 音频总时长。</p>
       </div>
 
-      <div class="decode-options">
-        <span class="opt-hint" id="audioMeta" role="status" aria-live="polite"></span>
+      <div class="control-rack">
+        <div class="decode-options"><span class="opt-hint" id="audioMeta" role="status" aria-live="polite">NO FILE LOADED</span></div>
+        <div class="dsp-options decode-options" aria-label="DSP 选项">
+          <span class="opt-hint">DSP BANK</span>
+          <label class="opt"><input type="checkbox" id="dspAfc" aria-label="启用 AFC 自动频率控制"><span>AFC</span></label>
+          <label class="opt"><input type="checkbox" id="dspLms" aria-label="启用 LMS 自适应滤波"><span>LMS</span></label>
+          <label class="opt"><input type="checkbox" id="dspBpf" aria-label="启用传统带通滤波器"><span>旧 BPF</span></label>
+          <button id="basebandFilterBtn" class="btn filter-range-toggle" type="button" aria-expanded="false" aria-controls="basebandFilterPanel">复基带 <span id="basebandFilterLabel">1000–2800 Hz</span></button>
+        </div>
+        <div id="basebandFilterPanel" class="filter-range-panel" hidden>
+          <div class="filter-slider-row"><label for="basebandLow">低截止 <output id="basebandLowValue">1000 Hz</output></label><input id="basebandLow" type="range" min="700" max="3000" step="10" value="1000"></div>
+          <div class="filter-slider-row"><label for="basebandHigh">高截止 <output id="basebandHighValue">2800 Hz</output></label><input id="basebandHigh" type="range" min="700" max="3000" step="10" value="2800"></div>
+          <div class="filter-range-footer"><span id="basebandCenterValue">中心 1900 Hz</span><button id="basebandResetBtn" class="btn-link" type="button">恢复默认</button></div>
+        </div>
       </div>
 
-      <div class="dsp-options decode-options" aria-label="DSP 选项">
-        <span class="opt-hint">DSP</span>
-        <label class="opt" title="自动检测 VIS 1900 Hz 基准并校正接收频偏">
-          <input type="checkbox" id="dspAfc" aria-label="启用 AFC 自动频率控制">
-          <span>AFC</span>
-        </label>
-        <label class="opt" title="归一化泄漏 LMS 自适应线增强器">
-          <input type="checkbox" id="dspLms" aria-label="启用 LMS 自适应滤波">
-          <span>LMS</span>
-        </label>
-        <label class="opt" title="1000–2400 Hz Hamming 窗 FIR 带通滤波器">
-          <input type="checkbox" id="dspBpf" checked aria-label="启用带通滤波器">
-          <span>BPF</span>
-        </label>
+      <div class="btn-row decode-actions two-actions">
+        <button id="realtimeDecodeBtn" class="btn accent command-btn" disabled aria-label="边播放边实时解码上传的音频"><span>◉</span> 实时解码</button>
+        <button id="decodeUploadedBtn" class="btn primary command-btn" disabled aria-label="解码上传的音频"><span>▶</span> 解码上传的音频</button>
       </div>
+      <div id="offlineDecodeProgress" class="offline-decode-progress" hidden aria-live="polite" aria-atomic="true">
+        <div class="offline-progress-head">
+          <span class="offline-progress-ident"><i aria-hidden="true"></i> OFFLINE DECODER</span>
+          <span id="offlineDecodeProgressText" class="offline-progress-status">正在分析 VIS / 同步</span>
+          <output id="offlineDecodeProgressValue" class="offline-progress-value">--</output>
+        </div>
+        <div id="offlineDecodeProgressBar" class="offline-progress-track is-indeterminate" role="progressbar" aria-label="离线解码进度" aria-valuemin="0" aria-valuemax="100" aria-valuetext="正在分析 VIS / 同步">
+          <div class="bar"></div>
+        </div>
+      </div>
+      <div class="progress" id="decProgress" hidden role="progressbar" aria-label="解码进度"><div class="bar"></div></div>
 
-      <div class="btn-row decode-actions">
-        <button id="decodeBtn" class="btn primary" disabled aria-label="解码生成的音频">▶ 解码</button>
-        <button id="decodeUploadedBtn" class="btn" disabled aria-label="解码上传的音频">解码上传的音频</button>
-        <button id="realtimeDecodeBtn" class="btn accent" disabled aria-label="边播放边实时解码上传的音频">◉ 实时解码</button>
-      </div>
-      <div class="progress" id="decProgress" hidden role="progressbar" aria-label="解码进度">
-        <div class="bar"></div>
-      </div>
-
-      <div class="result-wrap">
+      <div class="result-wrap console-screen">
         <div class="result-heading">
-          <div class="label">解码结果 <span id="resultMeta" class="meta" role="status" aria-live="polite"></span></div>
+          <div class="label"><span>IMAGE BUFFER</span> 解码结果 <small id="resultMeta" class="meta" role="status" aria-live="polite"></small></div>
           <div class="image-export-tools">
-            <label class="format-select-wrap" title="图片保存格式">
-              <select id="imageFormat" aria-label="图片保存格式">
-                <option value="png">PNG</option>
-                <option value="bmp">BMP</option>
-              </select>
-            </label>
-            <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片">
-              <span class="image-save-icon" aria-hidden="true">💾</span>
-            </button>
+            <label class="format-select-wrap" title="图片保存格式"><select id="imageFormat" aria-label="图片保存格式"><option value="png">PNG</option><option value="bmp">BMP</option></select></label>
+            <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片"><span class="image-save-icon" aria-hidden="true">⇩</span></button>
           </div>
         </div>
         <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
@@ -196,82 +170,13 @@
     </section>
   </main>
 
-  <!-- 自测对照 -->
-  <section class="compare" id="compareSection" hidden aria-labelledby="compare-title">
-    <h2 id="compare-title">自测对照</h2>
-    <div class="compare-grid">
-      <div>
-        <div class="label">原图</div>
-        <canvas id="origCanvas" width="320" height="256" aria-label="原始图像"></canvas>
-      </div>
-      <div>
-        <div class="label">解码图</div>
-        <canvas id="decodedCanvas" width="320" height="256" aria-label="解码后的图像"></canvas>
-      </div>
-    </div>
-    <div class="psnr" id="psnrOut" role="status" aria-live="polite"></div>
-  </section>
-
-  <footer role="contentinfo">
-    <div class="footer-inner">
-      <div class="footer-identity">
-        <span class="footer-signal" aria-hidden="true"></span>
-        <strong>Awesome SSTV</strong>
-        <span class="footer-license">LGPL-3.0-or-later</span>
-      </div>
-      <p class="footer-credit">
-        致谢 JE3HHT、JA7UDE 对
-        <a href="https://hamsoft.ca/pages/mmsstv.php" target="_blank" rel="noopener noreferrer">MMSSTV</a>
-        的贡献，以及 N5AC 对
-        <a href="https://github.com/n5ac/mmsstv" target="_blank" rel="noopener noreferrer">开源仓库</a>
-        的持续维护。
-      </p>
-      <nav class="footer-links" aria-label="开源协议与项目链接">
-        <a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer">GitHub 源码</a>
-        <a href="./LICENSES/LGPL-3.0-or-later.txt" target="_blank" rel="noopener noreferrer">开源许可证</a>
-        <a href="./LICENSES/MMSSTV-NOTICE.md" target="_blank" rel="noopener noreferrer">MMSSTV 参考声明</a>
-      </nav>
-    </div>
+  <footer class="radio-footer" role="contentinfo">
+    <span>AWESOME SSTV · LOCAL SIGNAL PROCESSING</span>
+    <nav aria-label="项目链接"><a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer">SOURCE</a><a href="./LICENSES/LGPL-3.0-or-later.txt">LICENSE</a></nav>
+    <a class="deerflow-mark" href="https://deerflow.tech" target="_blank" rel="noopener noreferrer" title="Created By Deerflow">Created By Deerflow</a>
   </footer>
-
   <div id="toast" class="toast" hidden role="alert" aria-live="assertive"></div>
-
   <audio id="audioPlayer" aria-label="SSTV 音频播放器"></audio>
-
   <script type="module" src="./js/app.js"></script>
-
-  <!-- 性能监控（可选） -->
-  <script>
-    // 性能指标收集
-    if ('PerformanceObserver' in window) {
-      try {
-        const perfObserver = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) {
-            // 可以发送到分析服务
-            console.debug('Performance:', entry.name, entry.duration.toFixed(2) + 'ms');
-          }
-        });
-        perfObserver.observe({ entryTypes: ['measure', 'navigation'] });
-      } catch (e) {
-        // 静默失败
-      }
-    }
-
-    // 页面加载完成时间
-    window.addEventListener('load', () => {
-      if (window.performance && window.performance.timing) {
-        const loadTime = window.performance.timing.loadEventEnd - window.performance.timing.navigationStart;
-        console.info('Page load time:', (loadTime / 1000).toFixed(2) + 's');
-      }
-    });
-
-    // Service Worker 支持（PWA 准备）
-    if ('serviceWorker' in navigator) {
-      // 取消注释以启用 PWA
-      // window.addEventListener('load', () => {
-      //   navigator.serviceWorker.register('./sw.js').catch(() => {});
-      // });
-    }
-  </script>
 </body>
 </html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="浏览器内 SSTV 慢扫描电视编码终端，将图像调制为可传输音频。">
+  <meta name="theme-color" content="#07110f">
+  <title>Awesome SSTV · 编码终端</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./css/style.css">
+  <link rel="stylesheet" href="./css/radio-console.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+</head>
+<body data-page="encoder">
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <button id="navToggle" class="nav-toggle" type="button" aria-expanded="false" aria-controls="navDrawer" aria-label="打开导航"><span></span><span></span><span></span></button>
+  <div id="navScrim" class="nav-scrim" hidden></div>
+  <nav id="navDrawer" class="nav-drawer" aria-label="主导航" aria-hidden="true">
+    <div class="nav-ident"><span class="nav-kicker">SSTV FIELD UNIT</span><strong>AWESOME<br>SSTV</strong><small>WEB TRANSCEIVER / 01</small></div>
+    <a class="nav-link" href="./index.html"><span>01</span>解码终端 <b>RX</b></a>
+    <a class="nav-link is-active" href="./encode.html" aria-current="page"><span>02</span>编码终端 <b>TX</b></a>
+    <div class="nav-foot"><i></i> LOCAL DSP · NO UPLINK</div>
+  </nav>
+
+  <header class="topbar radio-topbar" role="banner">
+    <a class="brand" href="./index.html" aria-label="Awesome SSTV 解码首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>AWESOME SSTV</strong><small>Slow Scan Signal Lab</small></span>
+    </a>
+    <div class="topbar-actions">
+      <label class="mode-select console-select"><span>TX MODE</span><select id="modeSelect" aria-label="选择 SSTV 模式"></select></label>
+      <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色或暗色主题">🌙</button>
+    </div>
+  </header>
+
+  <main class="radio-shell" role="main">
+    <section class="console-intro" aria-labelledby="page-title">
+      <div><p class="eyebrow tx"><span></span> TX / IMAGE MODULATION</p><h1 id="page-title">慢扫描发射终端</h1><p>将静态图像转换为标准 SSTV 音频，在本地预览波形并导出 WAV。</p></div>
+      <div class="frequency-readout tx-readout"><small>CARRIER MAP</small><strong>1.500 — 2.300</strong><span>kHz</span></div>
+    </section>
+
+    <section class="panel encoder radio-panel" aria-labelledby="encoder-title">
+      <div class="panel-heading"><div><span class="panel-index tx">TX–01</span><h2 id="encoder-title">IMAGE MODULATOR</h2></div><span class="panel-state tx"><i></i> READY</span></div>
+      <div class="encoder-deck">
+        <div class="console-module source-module">
+          <div class="module-label"><span>IMAGE SOURCE</span><b>源图像</b></div>
+          <div class="dropzone source-dropzone" id="dropzone" role="button" tabindex="0" aria-label="上传图片">
+            <canvas id="srcCanvas" width="320" height="256" aria-label="源图像预览"></canvas>
+            <div class="dropzone-hint" id="dropHint"><strong>载入图像</strong><small>PNG / JPEG / WEBP · 拖放或点击</small></div>
+            <input type="file" id="fileInput" accept="image/*" hidden aria-label="选择图片文件">
+          </div>
+        </div>
+        <div class="console-module tx-control-module">
+          <div class="module-label"><span>MODE TELEMETRY</span><b>调制参数</b></div>
+          <div class="mode-info" id="modeInfo" role="status" aria-live="polite"></div>
+          <div class="tx-actions">
+            <button id="useSampleBtn" class="btn ghost" aria-label="使用示例图片">载入测试图</button>
+            <button id="encodeBtn" class="btn primary command-btn" disabled aria-label="生成 SSTV 音频"><span>▶</span> 生成音频</button>
+          </div>
+          <div class="tx-actions secondary">
+            <button id="playBtn" class="btn" disabled aria-label="播放音频">▶ 播放</button>
+            <button id="downloadBtn" class="btn" disabled aria-label="下载 WAV 文件">⇩ 下载 WAV</button>
+            <button id="selfTestBtn" class="btn accent" disabled aria-label="执行自测闭环">⟳ 闭环测试</button>
+          </div>
+          <div class="progress" id="encProgress" hidden role="progressbar" aria-label="生成进度"><div class="bar"></div></div>
+        </div>
+      </div>
+
+      <div class="scope-grid">
+        <div class="waveform-wrap console-scope"><div class="label"><span>TIME DOMAIN</span> 合成音频波形</div><canvas id="waveform" aria-label="音频波形可视化"></canvas></div>
+        <div class="spectrum-wrap console-scope"><div class="label"><span>WATERFALL</span> 频谱瀑布图 <small class="freq-range">700–2700 Hz</small></div><canvas id="encoderSpectrum" aria-label="编码器频谱瀑布图"></canvas></div>
+      </div>
+    </section>
+
+    <section class="compare radio-panel" id="compareSection" hidden aria-labelledby="compare-title">
+      <div class="panel-heading"><div><span class="panel-index tx">LOOP</span><h2 id="compare-title">CLOSED LOOP TEST</h2></div></div>
+      <div class="compare-grid"><div><div class="label">SOURCE</div><canvas id="origCanvas" width="320" height="256" aria-label="原始图像"></canvas></div><div><div class="label">RECOVERED</div><canvas id="decodedCanvas" width="320" height="256" aria-label="解码后的图像"></canvas></div></div>
+      <div class="psnr" id="psnrOut" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer class="radio-footer" role="contentinfo">
+    <span>AWESOME SSTV · LOCAL SIGNAL PROCESSING</span>
+    <nav aria-label="项目链接"><a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer">SOURCE</a><a href="./LICENSES/LGPL-3.0-or-later.txt">LICENSE</a></nav>
+    <a class="deerflow-mark" href="https://deerflow.tech" target="_blank" rel="noopener noreferrer" title="Created By Deerflow">Created By Deerflow</a>
+  </footer>
+  <div id="toast" class="toast" hidden role="alert" aria-live="assertive"></div>
+  <audio id="audioPlayer" aria-label="SSTV 音频播放器"></audio>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

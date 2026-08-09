@@ -15,6 +15,11 @@ import { FREQ } from './modes.js';
 const LEADER_MS = 300;
 const BREAK_MS = 10;
 const BIT_MS = 30;
+// decodeVISHeader locates the leader edge on a centered 3-ms moving average.
+// With a 1900 -> 1200 Hz edge and the 80-Hz leader tolerance, that edge is
+// observed about 1.15 ms early. Sync-bearing modes subsequently re-anchor on
+// line pulses, but fixed-clock AVT must carry this timing correction forward.
+const VIS_EDGE_ADVANCE_MS = 1.15;
 
 // 偶校验位:使 8 位中 1 的总数为偶数
 export function visParity(visCode7) {
@@ -128,20 +133,35 @@ export function decodeVISHeader(freq, sr, searchStart = 0) {
   const leaderMinMs = 100;
   const leaderMinSamples = Math.floor(leaderMinMs * sr / 1000);
 
-  let leaderStart = -1;
-  let i = searchStart;
+  let i = Math.max(0, Math.floor(searchStart));
+  let candidateOrdinal = 0;
   while (i < searchEnd) {
     if (near(sf[i], FREQ.VIS_START, 80)) {
-      // 跟踪连续 leader 长度
+      const leaderStart = i;
+      // Track this leader-like run. Real recordings can contain short
+      // 1900-Hz voice/noise plateaus before the actual VIS leader, so a bad
+      // candidate must not terminate the entire search window.
       let j = i;
       while (j < searchEnd && near(sf[j], FREQ.VIS_START, 80)) j++;
       const len = j - i;
-      if (len >= leaderMinSamples) { leaderStart = i; break; }
-      i = j + 1;
+      if (len >= leaderMinSamples) {
+        const decoded = decodeVISCandidate(sf, sr, leaderStart);
+        // Preserve the legacy first-candidate behavior. Recovery after a bad
+        // candidate requires the stronger, standard double-leader structure;
+        // accepting arbitrary later single runs creates VIS false positives
+        // inside Robot recordings.
+        if (decoded && (candidateOrdinal === 0 || decoded.doubleLeader)) {
+          return decoded.header;
+        }
+        candidateOrdinal++;
+      }
+      i = Math.max(j, i + 1);
     } else i++;
   }
-  if (leaderStart < 0) return null;
+  return null;
+}
 
+function decodeVISCandidate(sf, sr, leaderStart) {
   // 找到 leader 起点。leader 持续到频率离开 1900。取 leader 结束点。
   let leaderEnd = leaderStart;
   while (leaderEnd < sf.length && near(sf[leaderEnd], FREQ.VIS_START, 80)) leaderEnd++;
@@ -149,16 +169,39 @@ export function decodeVISHeader(freq, sr, searchStart = 0) {
   // leader 之后:break(10ms@1200) + start bit(30ms@1200),共 40ms,然后是 8 个 data bit。
   // p 指向 bit0 的起点。
   const breakSamples = Math.floor((BREAK_MS + BIT_MS) * sr / 1000);
+  let framingLeaderEnd = leaderEnd;
+  let doubleLeader = false;
   let p = leaderEnd + breakSamples;
 
-  // 兼容双 leader 结构:部分 SSTV 信号在第一段 1900Hz leader 后,
-  // 不是 break+start,而是又一个 1900Hz leader(中间夹 10ms@1200 break)。
-  // 检测:p 处若仍是 1900Hz,说明是第二段 leader,跟踪到其结束再 +40ms 读位。
-  if (p < sf.length && near(sf[p], FREQ.VIS_START, 80)) {
-    let leader2End = p;
+  // Compatible double-leader structure: two substantial 1900-Hz runs with
+  // the standard short break between them. Search the actual second edge
+  // instead of merely sampling 40 ms after the first, so recovery has a
+  // structural confidence check rather than another single-point match.
+  const leader2SearchStart = leaderEnd + Math.floor(5 * sr / 1000);
+  const leader2SearchEnd = Math.min(sf.length, leaderEnd + Math.ceil(25 * sr / 1000));
+  let leader2Start = leader2SearchStart;
+  while (leader2Start < leader2SearchEnd && !near(sf[leader2Start], FREQ.VIS_START, 80)) leader2Start++;
+  if (leader2Start < leader2SearchEnd) {
+    let leader2End = leader2Start;
     while (leader2End < sf.length && near(sf[leader2End], FREQ.VIS_START, 80)) leader2End++;
-    p = leader2End + breakSamples;
+    const recoveryLeaderSamples = Math.floor(200 * sr / 1000);
+    if (leaderEnd - leaderStart >= recoveryLeaderSamples &&
+        leader2End - leader2Start >= recoveryLeaderSamples) {
+      doubleLeader = true;
+      framingLeaderEnd = leader2End;
+      p = leader2End + breakSamples;
+    }
   }
+
+  // Validate the 10-ms break and 30-ms start bit. Data parity alone is too
+  // weak for scanning multiple candidates: ordinary image tones can produce
+  // a parity-valid byte by chance.
+  const breakMid = framingLeaderEnd + Math.floor(BREAK_MS * sr / 2000);
+  const startMid = framingLeaderEnd
+    + Math.floor(BREAK_MS * sr / 1000)
+    + Math.floor(BIT_MS * sr / 2000);
+  if (startMid >= sf.length || !near(sf[breakMid], FREQ.VIS_BREAK, 80)
+      || !near(sf[startMid], FREQ.VIS_BREAK, 80)) return null;
 
   // 读首个 8-bit 字。MMSSTV 的 MP/MR/ML 家族以低字节 0x23 标记，
   // 后随第二个字节组成无校验的 16 位扩展 VIS。
@@ -182,17 +225,26 @@ export function decodeVISHeader(freq, sr, searchStart = 0) {
       if (near(f, FREQ.VIS_BIT_1, 80)) high |= (1 << bit);
       else if (!near(f, FREQ.VIS_BIT_0, 80)) return null;
     }
-    const imageStart = p + 16 * bitSamples + Math.floor(BIT_MS * sr / 1000);
-    return { visCode7: (high << 8) | byte, sampleOffset: imageStart };
+    const stopMid = p + 16 * bitSamples + Math.floor(bitSamples / 2);
+    if (stopMid >= sf.length || !near(sf[stopMid], FREQ.VIS_BREAK, 80)) return null;
+    const imageStart = p + 16 * bitSamples + Math.floor(BIT_MS * sr / 1000)
+      + Math.round(VIS_EDGE_ADVANCE_MS * sr / 1000);
+    return {
+      header: { visCode7: (high << 8) | byte, sampleOffset: imageStart },
+      doubleLeader,
+    };
   }
 
   // 校验偶校验
   const code7 = byte & 0x7f;
   const parityBit = (byte >> 7) & 1;
   if (visParity(code7) !== parityBit) return null;
+  const stopMid = p + 8 * bitSamples + Math.floor(bitSamples / 2);
+  if (stopMid >= sf.length || !near(sf[stopMid], FREQ.VIS_BREAK, 80)) return null;
 
-  const imageStart = p + 8 * bitSamples + Math.floor(BIT_MS * sr / 1000); // +stop bit
-  return { visCode7: code7, sampleOffset: imageStart };
+  const imageStart = p + 8 * bitSamples + Math.floor(BIT_MS * sr / 1000)
+    + Math.round(VIS_EDGE_ADVANCE_MS * sr / 1000); // +stop bit + smoothed-edge timing
+  return { header: { visCode7: code7, sampleOffset: imageStart }, doubleLeader };
 }
 
 function near(a, b, tol) {

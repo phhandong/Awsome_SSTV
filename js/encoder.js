@@ -43,7 +43,7 @@ export function encode(image, mode, opts = {}) {
   // 2. 预估总样本数,分配缓冲
   const visMs = mode.narrow ? (150 + 24 * 22) : 610;
   const lineCount = mode.dataLines || height;
-  const totalMs = visMs + mode.lineDurationMs * lineCount * (mode.interlace ? mode.interlace.fields : 1);
+  const totalMs = visMs + mode.lineDurationMs * lineCount;
   const totalSamples = Math.ceil(totalMs * sr / 1000) + sr;  // +1s 余量
   const samples = new Float32Array(totalSamples);
 
@@ -64,19 +64,11 @@ export function encode(image, mode, opts = {}) {
     n = appendTone(samples, n, FREQ.BLACK, 1.5, sr, phaseRef);
   }
 
-  // 5. 逐行
-  if (mode.colorSpace === ColorSpace.YUV && mode.interlace) {
-    // Robot 36/72:实测真实 MMSSTV 信号为逐行顺序发送(脉冲 i → 图像行 i),
-    // 非奇偶分场。encoder 与 decoder 均按逐行,与真实信号对齐。
-    for (let y = 0; y < height; y++) {
-      n = appendLine(samples, n, mode, rgba, y, sr, phaseRef);
-      if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / height);
-    }
-  } else {
-    for (let y = 0; y < lineCount; y++) {
-      n = appendLine(samples, n, mode, rgba, y, sr, phaseRef);
-      if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / lineCount);
-    }
+  // 5. Every descriptor is transmitted in its declared row order. Robot 36
+  // alternates chroma markers per row; Robot 72 carries Y/V/U in one row.
+  for (let y = 0; y < lineCount; y++) {
+    n = appendLine(samples, n, mode, rgba, y, sr, phaseRef);
+    if (opts.onProgress && (y % 16 === 0)) opts.onProgress(y / lineCount);
   }
 
   if (opts.onProgress) opts.onProgress(1);
@@ -88,14 +80,24 @@ export function encode(image, mode, opts = {}) {
 // 合成一整行
 function appendLine(samples, n, mode, rgba, y, sr, phaseRef) {
   const { width } = mode;
+  const lineStart = n;
+  let elapsedMs = 0;
   for (const seg of mode.lineSegments) {
+    elapsedMs += seg.durationMs;
+    const segmentEnd = mode.robot36Legacy
+      ? n + Math.floor(seg.durationMs * sr / 1000)
+      : lineStart + Math.round(elapsedMs * sr / 1000);
+    const segmentSamples = Math.max(0, segmentEnd - n);
     if (seg.type === SegType.SCAN) {
       // 取该行该通道的像素值数组(0..255)
       const chanPixels = extractChannel(rgba, mode, y, seg.channel, width);
-      n = appendScan(samples, n, chanPixels, seg.durationMs, sr, phaseRef, mode);
+      n = appendScanSamples(samples, n, chanPixels, segmentSamples, sr, phaseRef, mode);
     } else {
       // SYNC / PORCH / SYNC_PORCH:定频
-      n = appendTone(samples, n, seg.freq, seg.durationMs, sr, phaseRef);
+      const frequency = seg.role === 'chromaMarker' && (y & 1)
+        ? (seg.alternateFreq ?? FREQ.WHITE)
+        : seg.freq;
+      n = appendToneSamples(samples, n, frequency, segmentSamples, sr, phaseRef);
     }
   }
   return n;
@@ -146,6 +148,10 @@ function yuvCb(r, g, b) { return 128 + 0.5 * (b - (0.299 * r + 0.587 * g + 0.114
 // 追加定频音调
 function appendTone(samples, n, freq, durationMs, sr, phaseRef) {
   const num = Math.floor(durationMs * sr / 1000);
+  return appendToneSamples(samples, n, freq, num, sr, phaseRef);
+}
+
+function appendToneSamples(samples, n, freq, num, sr, phaseRef) {
   const phaseInc = 2 * Math.PI * freq / sr;
   for (let i = 0; i < num; i++) {
     samples[n++] = sinLut(phaseRef.phase);
@@ -157,8 +163,12 @@ function appendTone(samples, n, freq, durationMs, sr, phaseRef) {
 
 // 追加扫描段:逐像素调频,相位连续
 function appendScan(samples, n, pixels, durationMs, sr, phaseRef, mode) {
-  const count = pixels.length;
   const totalSamples = Math.floor(durationMs * sr / 1000);
+  return appendScanSamples(samples, n, pixels, totalSamples, sr, phaseRef, mode);
+}
+
+function appendScanSamples(samples, n, pixels, totalSamples, sr, phaseRef, mode) {
+  const count = pixels.length;
   // 每像素占的样本数(浮点,均分)
   const perPixel = totalSamples / count;
   for (let x = 0; x < count; x++) {

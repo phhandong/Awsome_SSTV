@@ -12,9 +12,14 @@ export class WebSSTVDecoder extends EventTarget {
         this.pending = null;
       }
     };
-    this.worker.onerror = event => this.dispatchEvent(new CustomEvent('error', {
-      detail: { message: event.message || 'Decoder worker failed' },
-    }));
+    this.worker.onerror = event => {
+      const message = event.message || 'Decoder worker failed';
+      this.dispatchEvent(new CustomEvent('error', { detail: { message } }));
+      if (this.pending) {
+        this.pending.reject(new Error(message));
+        this.pending = null;
+      }
+    };
     this.audioContext = null;
     this.stream = null;
     this.source = null;
@@ -36,7 +41,10 @@ export class WebSSTVDecoder extends EventTarget {
 
   decode(samples, sampleRate, options = {}) {
     if (this.pending) this.pending.reject(new Error('A decode is already running'));
-    this.reset({ ...options, emitFrames: options.emitFrames !== false });
+    // One-shot file decoding is final-frame-only unless a caller explicitly
+    // asks for provisional frames. Live microphone/playback paths use reset()
+    // directly with emitFrames:true.
+    this.reset({ ...options, emitFrames: options.emitFrames === true });
     const chunkSize = Math.max(2048, Math.floor(sampleRate / 2));
     for (let offset = 0; offset < samples.length; offset += chunkSize) {
       this.push(samples.subarray(offset, Math.min(samples.length, offset + chunkSize)), sampleRate);

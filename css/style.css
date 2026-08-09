@@ -522,6 +522,46 @@ html {
   transform: scale(0.95);
 }
 
+.filter-range-toggle {
+  padding: 6px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.filter-range-toggle[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.filter-range-toggle span { font-variant-numeric: tabular-nums; }
+.filter-range-panel {
+  margin: -6px 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-elev2);
+}
+.filter-slider-row + .filter-slider-row { margin-top: 10px; }
+.filter-slider-row label,
+.filter-range-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.filter-slider-row output,
+.filter-range-footer span {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.filter-slider-row input[type="range"] {
+  width: 100%;
+  margin: 7px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.filter-range-footer { margin-top: 8px; }
+
 /* 音频播放器 */
 .audio-player-wrapper {
   background: var(--bg-elev2);

@@ -4,7 +4,13 @@ import { SSTVReceiver } from './receiver.js';
 let receiver = null;
 
 function create(options = {}) {
-  receiver = new SSTVReceiver(options);
+  const receiverOptions = options.emitFrames === false
+    ? {
+        ...options,
+        onProgress: progress => self.postMessage({ type: 'decode-progress', progress }),
+      }
+    : options;
+  receiver = new SSTVReceiver(receiverOptions);
   receiver.on('*', event => {
     if (event.type === 'frame') {
       const result = event.result;

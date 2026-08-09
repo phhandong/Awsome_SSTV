@@ -12,12 +12,9 @@ const len = channelData[0].length;
 const mono = new Float32Array(len);
 for (let i = 0; i < len; i++) { let s = 0; for (let c = 0; c < channelData.length; c++) s += channelData[c][i]; mono[i] = s / channelData.length; }
 
-// 从 1.5s 开始解码(跳过前导杂讯)
-const sr = 44100;
-import('./js/demod.js').then(async ({ resample }) => {
-  const pcm44 = resample(mono, sampleRate, sr);
-  const sliced = sliceFromStart(pcm44, sr, 1.5);
-  const result = decode(sliced, sr);
+// 从 1.5s 开始解码(跳过前导杂讯)，保留 MP3 的原始采样率供相位鉴频。
+const sliced = sliceFromStart(mono, sampleRate, 1.5);
+const result = decode(sliced, sampleRate);
   console.log('解码:', result.mode.name, result.width + 'x' + result.height);
 
   // 写 PNG。像素已经是 RGBA,直接复制可避免 PPM 文本体积和行尾空格。
@@ -36,4 +33,3 @@ import('./js/demod.js').then(async ({ resample }) => {
     }
     console.log(`  行${y}: R${(r/c).toFixed(0)} G${(g/c).toFixed(0)} B${(b/c).toFixed(0)}`);
   }
-});
