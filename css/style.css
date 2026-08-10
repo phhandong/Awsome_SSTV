@@ -687,10 +687,10 @@ html {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #fc8181;
+  background: #3b82f6;
   pointer-events: none;
   z-index: 3;
-  box-shadow: 0 0 8px rgba(252, 129, 129, 0.8);
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.82);
 }
 
 .audio-playhead::before {
@@ -700,9 +700,9 @@ html {
   left: -4px;
   width: 10px;
   height: 10px;
-  background: #fc8181;
+  background: #3b82f6;
   border-radius: 50%;
-  box-shadow: 0 0 8px rgba(252, 129, 129, 0.8);
+  box-shadow: 0 0 8px rgba(59, 130, 246, 0.82);
 }
 
 .audio-time-display {

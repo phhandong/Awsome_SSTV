@@ -1,3 +1,12 @@
+import { StreamingSnrEstimator } from './fft.js';
+
+function snrFftSize(sampleRate) {
+  const target = Math.max(2048, sampleRate * 0.15);
+  let size = 2048;
+  while (size < target && size < 16384) size *= 2;
+  return size;
+}
+
 export class WebSSTVDecoder extends EventTarget {
   constructor() {
     super();
@@ -24,15 +33,53 @@ export class WebSSTVDecoder extends EventTarget {
     this.stream = null;
     this.source = null;
     this.capture = null;
+    this.snrConfig = null;
+    this.snrEstimator = null;
+    this.snrSampleRate = 0;
   }
 
   reset(options = {}) {
-    this.worker.postMessage({ type: 'reset', options });
+    const { emitSnr = false, ...decoderOptions } = options;
+    const baseband = options.dsp?.baseband || {};
+    this.snrConfig = emitSnr === true
+      ? { lowHz: baseband.lowHz, highHz: baseband.highHz }
+      : null;
+    this.snrEstimator = null;
+    this.snrSampleRate = 0;
+    this.worker.postMessage({ type: 'reset', options: decoderOptions });
   }
 
   push(samples, sampleRate) {
     const transferable = samples.slice();
     this.worker.postMessage({ type: 'push', samples: transferable.buffer, sampleRate }, [transferable.buffer]);
+    this.updateSnr(samples, sampleRate);
+  }
+
+  updateSnr(samples, sampleRate) {
+    if (!this.snrConfig) return;
+    try {
+      if (!this.snrEstimator) {
+        const fftSize = snrFftSize(sampleRate);
+        this.snrEstimator = new StreamingSnrEstimator(sampleRate, {
+          ...this.snrConfig,
+          fftSize,
+          hopSize: fftSize / 2,
+        });
+        this.snrSampleRate = sampleRate;
+      }
+      if (sampleRate !== this.snrSampleRate) return;
+      const estimate = this.snrEstimator.push(samples);
+      if (estimate) {
+        this.dispatchEvent(new CustomEvent('snr', {
+          detail: { type: 'snr', ...estimate },
+        }));
+      }
+    } catch (error) {
+      // A display-only metric must never interrupt audio delivery to the decoder Worker.
+      console.warn('SNR meter disabled:', error);
+      this.snrConfig = null;
+      this.snrEstimator = null;
+    }
   }
 
   end() {
@@ -68,8 +115,11 @@ export class WebSSTVDecoder extends EventTarget {
     const muted = this.audioContext.createGain();
     muted.gain.value = 0;
     this.source.connect(this.capture).connect(muted).connect(this.audioContext.destination);
-    this.reset({ ...options, emitFrames: true, renderEveryRows: 8 });
-    this.capture.port.onmessage = ({ data }) => this.push(data, this.audioContext.sampleRate);
+    this.reset({ ...options, emitFrames: true, emitSnr: true, renderEveryRows: 8 });
+    this.capture.port.onmessage = ({ data }) => {
+      const context = this.audioContext;
+      if (context) this.push(data, context.sampleRate);
+    };
     await this.audioContext.resume();
   }
 
@@ -83,6 +133,9 @@ export class WebSSTVDecoder extends EventTarget {
     this.source = null;
     this.stream = null;
     this.audioContext = null;
+    this.snrConfig = null;
+    this.snrEstimator = null;
+    this.snrSampleRate = 0;
   }
 
   destroy() {

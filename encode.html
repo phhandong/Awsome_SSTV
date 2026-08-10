@@ -30,15 +30,13 @@
       <span><strong>AWESOME SSTV</strong><small>Slow Scan Signal Lab</small></span>
     </a>
     <div class="topbar-actions">
-      <label class="mode-select console-select"><span>TX MODE</span><select id="modeSelect" aria-label="选择 SSTV 模式"></select></label>
       <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色或暗色主题">🌙</button>
     </div>
   </header>
 
   <main class="radio-shell" role="main">
     <section class="console-intro" aria-labelledby="page-title">
-      <div><p class="eyebrow tx"><span></span> TX / IMAGE MODULATION</p><h1 id="page-title">慢扫描发射终端</h1><p>将静态图像转换为标准 SSTV 音频，在本地预览波形并导出 WAV。</p></div>
-      <div class="frequency-readout tx-readout"><small>CARRIER MAP</small><strong>1.500 — 2.300</strong><span>kHz</span></div>
+      <div><p class="eyebrow tx"><span></span> TX / IMAGE MODULATION</p><h1 id="page-title">SSTV 发射终端</h1><p>将静态图像转换为标准 SSTV 音频，在本地预览波形并导出 WAV。</p></div>
     </section>
 
     <section class="panel encoder radio-panel" aria-labelledby="encoder-title">
@@ -80,6 +78,25 @@
       <div class="psnr" id="psnrOut" role="status" aria-live="polite"></div>
     </section>
   </main>
+
+  <button id="txSettingsToggle" class="rx-settings-fab" type="button" aria-expanded="false" aria-controls="txSettingsPanel" aria-label="打开编码设置" title="编码设置">
+    <span aria-hidden="true">⚙</span>
+  </button>
+  <div id="txSettingsScrim" class="rx-settings-scrim" hidden></div>
+  <aside id="txSettingsPanel" class="rx-settings-panel tx-settings-panel" data-settings-label="编码设置" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="txSettingsTitle" tabindex="-1" inert>
+    <header class="rx-settings-header">
+      <div><span class="rx-settings-kicker">TX CONTROL / MODULATION</span><h2 id="txSettingsTitle">编码设置</h2></div>
+      <button id="txSettingsClose" class="rx-settings-close" type="button" aria-label="关闭编码设置">×</button>
+    </header>
+    <div class="rx-settings-body">
+      <section class="rx-settings-section" aria-labelledby="txModeSettingsTitle">
+        <div class="rx-settings-section-head"><span>01 / MODULATION</span><strong id="txModeSettingsTitle">模式选择</strong></div>
+        <div class="tx-mode-settings">
+          <label class="mode-select console-select"><span>TX MODE</span><select id="modeSelect" aria-label="选择 SSTV 模式"></select></label>
+        </div>
+      </section>
+    </div>
+  </aside>
 
   <footer class="radio-footer" role="contentinfo">
     <span>AWESOME SSTV · LOCAL SIGNAL PROCESSING</span>

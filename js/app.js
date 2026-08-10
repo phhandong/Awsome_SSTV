@@ -28,13 +28,18 @@ const state = {
   offlineDecodeActive: false,
   offlineProgressHideTimer: null,
   decodedResult: null,
+  decodeGeneration: 0,
 };
 
 const FFT_SIZE = 512;
 const BASEBAND_DEFAULT = { lowHz: 1000, highHz: 2800 };
 const BASEBAND_MIN_HZ = 700;
 const BASEBAND_MAX_HZ = 3000;
-const BASEBAND_MIN_GAP_HZ = 200;
+// VIS、行同步和图像电平会用到 1100–2300 Hz；保留至少 100 Hz 保护带。
+const BASEBAND_LOW_MAX_HZ = 1000;
+const BASEBAND_HIGH_MIN_HZ = 2400;
+const SNR_METER_MIN_DB = -10;
+const SNR_METER_MAX_DB = 30;
 
 function init() {
   setupNavigation();
@@ -87,6 +92,7 @@ function init() {
   });
   document.getElementById('realtimeDecodeBtn')?.addEventListener('click', toggleRealtimeDecode);
   document.getElementById('saveImageBtn')?.addEventListener('click', saveDecodedImage);
+  document.getElementById('resetDecodedBtn')?.addEventListener('click', () => resetDecodedResult({ announce: true }));
   const imageFormat = document.getElementById('imageFormat');
   if (imageFormat) {
     try { imageFormat.value = localStorage.getItem('sstv.imageFormat') || 'png'; } catch (_) {}
@@ -100,7 +106,10 @@ function init() {
   }
   document.getElementById('micStartBtn')?.addEventListener('click', startMicrophoneReceiver);
   document.getElementById('micStopBtn')?.addEventListener('click', stopMicrophoneReceiver);
-  if (document.getElementById('basebandFilterBtn')) setupBasebandFilter();
+  const basebandController = document.getElementById('basebandFilterBtn')
+    ? setupBasebandFilter()
+    : null;
+  setupPageSettings(basebandController);
 
   if (audioDropzone && typeof Worker !== 'undefined') {
     state.webDecoder = new WebSSTVDecoder();
@@ -416,7 +425,13 @@ function enhanceSelect(select) {
 
   trigger.addEventListener('click', () => (menu.hidden ? open() : close()));
   trigger.addEventListener('keydown', event => {
-    if (event.key === 'Escape') close();
+    if (event.key === 'Escape' && !menu.hidden) {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      trigger.focus();
+      return;
+    }
     if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       open();
@@ -486,6 +501,7 @@ export function setOfflineDecodeProgress(progress = null, status = '正在分析
   clearTimeout(state.offlineProgressHideTimer);
   state.offlineProgressHideTimer = null;
   panel.hidden = false;
+  panel.classList.toggle('is-idle', phase === 'idle');
   panel.classList.toggle('is-complete', phase === 'complete');
   panel.classList.toggle('is-error', phase === 'error');
 
@@ -514,13 +530,12 @@ export function hideOfflineDecodeProgress(delay = 0) {
   const panel = document.getElementById('offlineDecodeProgress');
   if (!panel) return;
   clearTimeout(state.offlineProgressHideTimer);
-  const hide = () => {
-    panel.hidden = true;
-    panel.classList.remove('is-complete', 'is-error');
+  const settle = () => {
     state.offlineProgressHideTimer = null;
+    setOfflineDecodeProgress(0, '等待解码', 'idle');
   };
-  if (delay > 0) state.offlineProgressHideTimer = setTimeout(hide, delay);
-  else hide();
+  if (delay > 0) state.offlineProgressHideTimer = setTimeout(settle, delay);
+  else settle();
 }
 
 function waitForBrowserPaint() {
@@ -538,6 +553,7 @@ async function onDecode(pcm, sr) {
 
   state.isProcessing = true;
   state.offlineDecodeActive = true;
+  const decodeGeneration = state.decodeGeneration;
   const decodeUploadedBtn = document.getElementById('decodeUploadedBtn');
   decodeUploadedBtn.classList.add('loading');
   decodeUploadedBtn.setAttribute('aria-busy', 'true');
@@ -576,20 +592,24 @@ async function onDecode(pcm, sr) {
             `正在重建图像 ${Math.round(progress * 100)}%`
           ),
         });
+    if (decodeGeneration !== state.decodeGeneration) return;
     renderReceiverFrame(result);
-    ui.setProgress('decProgress', 1);
     setOfflineDecodeProgress(1, `${result.mode.name} · 解码完成`, 'complete');
     ui.toast(`解码完成 · ${result.mode.name}`, 'success');
   } catch (e) {
     console.error(e);
-    setOfflineDecodeProgress(null, '解码失败 · 请检查信号或模式', 'error');
-    ui.toast('解码失败: ' + e.message, 'error');
+    if (decodeGeneration === state.decodeGeneration) {
+      setOfflineDecodeProgress(null, '解码失败 · 请检查信号或模式', 'error');
+      ui.toast('解码失败: ' + e.message, 'error');
+    }
   } finally {
     state.isProcessing = false;
     state.offlineDecodeActive = false;
     decodeUploadedBtn.classList.remove('loading');
     decodeUploadedBtn.removeAttribute('aria-busy');
-    hideOfflineDecodeProgress(document.getElementById('offlineDecodeProgress')?.classList.contains('is-error') ? 1400 : 900);
+    if (decodeGeneration === state.decodeGeneration) {
+      hideOfflineDecodeProgress(document.getElementById('offlineDecodeProgress')?.classList.contains('is-error') ? 1400 : 900);
+    }
   }
 }
 
@@ -614,11 +634,17 @@ async function toggleRealtimeDecode() {
   const startSample = Math.floor(startSec * sampleRate);
   const endSample = Math.min(samples.length, Math.ceil(endSec * sampleRate));
   state.realtimeDecode = { samples, sampleRate, startSec, endSec, startSample, endSample, cursor: startSample, ended: false };
-  updateSignalMeter(0);
-  state.webDecoder?.reset({ ...readReceiveOptions(), dsp: { ...readDspOptions(), engine: 'mmsstv' }, emitFrames: true, renderEveryRows: 8 });
+  updateSnrMeter();
+  state.webDecoder?.reset({
+    ...readReceiveOptions(),
+    dsp: { ...readDspOptions(), engine: 'mmsstv' },
+    emitFrames: true,
+    emitSnr: true,
+    renderEveryRows: 8,
+  });
   setRealtimeButton(true);
   setReceiverStatus('实时搜索信号', 'active');
-  ui.setProgress('decProgress', 0);
+  setOfflineDecodeProgress(0, '实时解码 · 等待同步');
   ui.toast('实时解码已开始，正在同步播放音频', 'success');
   try {
     state.audioPlayer.seek(startSec);
@@ -639,13 +665,14 @@ function stopRealtimeDecode(finalize = true) {
   }
   if (state.audioPlayer?.isPlaying) state.audioPlayer.pause();
   setRealtimeButton(false);
-  updateSignalMeter(0);
+  updateSnrMeter();
+  hideOfflineDecodeProgress();
 }
 
 function handlePlaybackChange({ time, isPlaying }) {
   const realtime = state.realtimeDecode;
   if (!realtime) return;
-  if (!isPlaying) updateSignalMeter(0);
+  if (!isPlaying) updateSnrMeter();
   const elapsed = Math.max(0, Math.min(realtime.endSec - realtime.startSec, time - realtime.startSec));
   const target = Math.min(realtime.endSample, realtime.startSample + Math.floor(elapsed * realtime.sampleRate));
   if (target > realtime.cursor) {
@@ -659,28 +686,24 @@ function bindReceiverEvents(receiver) {
   receiver.addEventListener('searching', () => {
     if (state.micActive) setReceiverStatus('搜索信号');
   });
-  receiver.addEventListener('level', ({ detail }) => {
+  receiver.addEventListener('snr', ({ detail }) => {
     if (!state.micActive && !state.realtimeDecode) return;
-    const dbFs = 20 * Math.log10(Math.max(1e-6, Number(detail.rms) || 0));
-    const percent = Math.max(0, Math.min(100, (dbFs + 60) / 60 * 100));
-    updateSignalMeter(percent);
+    updateSnrMeter(detail.snrDb);
   });
   receiver.addEventListener('locked', ({ detail }) => {
     const labels = { vis: 'VIS', fsk: 'FSK', sync: '同步', manual: '手动' };
     setReceiverStatus(`已锁定 · ${labels[detail.source] || '自动'}`, 'locked');
     document.getElementById('receiverMode').textContent = detail.mode.name;
-    document.getElementById('receiverRows').textContent = `0 / ${detail.mode.height}`;
     if (state.offlineDecodeActive) {
       setOfflineDecodeProgress(0.05, `已锁定 ${detail.mode.name} · 正在读取图像行`);
     }
   });
   receiver.addEventListener('row', ({ detail }) => {
-    document.getElementById('receiverRows').textContent = `${detail.rows} / ${detail.totalRows}`;
     if (state.offlineDecodeActive) {
       const ratio = Math.max(0, Math.min(1, detail.rows / detail.totalRows));
       setOfflineDecodeProgress(0.05 + ratio * 0.45, `正在读取图像行 ${detail.rows} / ${detail.totalRows}`);
     } else {
-      ui.setProgress('decProgress', detail.rows / detail.totalRows);
+      setOfflineDecodeProgress(detail.rows / detail.totalRows, `实时解码 ${detail.rows} / ${detail.totalRows}`);
     }
   });
   receiver.addEventListener('decode-progress', ({ detail }) => {
@@ -702,29 +725,71 @@ function bindReceiverEvents(receiver) {
   });
 }
 
-export function updateSignalMeter(percent = 0) {
+export function updateSnrMeter(snrDb = null) {
   const meter = document.getElementById('receiverMeter');
   if (!meter) return;
-  const clamped = Math.max(0, Math.min(100, percent));
   const bars = [...meter.querySelectorAll('.signal-cell')];
-  const activeCount = Math.ceil(clamped / 100 * bars.length);
+
+  if (typeof snrDb !== 'number' || !Number.isFinite(snrDb)) {
+    bars.forEach(bar => bar.classList.remove('is-active'));
+    meter.style.setProperty('--signal-level', '0%');
+    meter.removeAttribute('aria-valuenow');
+    meter.setAttribute('aria-valuetext', '等待信号');
+    const output = document.getElementById('receiverLevelText');
+    if (output) output.textContent = '-- dB';
+    return;
+  }
+
+  const measured = snrDb;
+  const meterValue = Math.max(SNR_METER_MIN_DB, Math.min(SNR_METER_MAX_DB, measured));
+  const percent = (meterValue - SNR_METER_MIN_DB) / (SNR_METER_MAX_DB - SNR_METER_MIN_DB) * 100;
+  const activeCount = percent > 0 ? Math.ceil(percent / 100 * bars.length) : 0;
   bars.forEach((bar, index) => bar.classList.toggle('is-active', index < activeCount));
-  meter.style.setProperty('--signal-level', `${clamped}%`);
-  meter.setAttribute('aria-valuenow', String(Math.round(clamped)));
+  meter.style.setProperty('--signal-level', `${percent}%`);
+  meter.setAttribute('aria-valuenow', meterValue.toFixed(1));
+  meter.setAttribute('aria-valuetext', `${measured.toFixed(1)} dB`);
   const output = document.getElementById('receiverLevelText');
-  if (output) output.textContent = `${Math.round(clamped)}%`;
+  if (output) output.textContent = `${measured.toFixed(1)} dB`;
 }
 
 export function renderReceiverFrame(result) {
   state.decodedResult = result;
   ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
   document.getElementById('saveImageBtn').disabled = false;
-  document.getElementById('resultMeta').textContent = formatDecodeMeta(result);
+  document.getElementById('resetDecodedBtn').disabled = false;
+  document.getElementById('decoderOutput').classList.remove('is-empty');
   document.getElementById('receiverMode').textContent = result.mode.name;
-  document.getElementById('receiverRows').textContent = `${result.height} / ${result.height}`;
   document.getElementById('receiverAfc').textContent = result.dsp?.afcLocked
     ? `${result.dsp.afcOffsetHz >= 0 ? '+' : ''}${result.dsp.afcOffsetHz.toFixed(1)} Hz`
     : (result.dsp?.afc ? '未锁定' : '关闭');
+}
+
+export function resetDecodedResult({ announce = false, resetProgress = true } = {}) {
+  state.decodeGeneration++;
+  state.offlineDecodeActive = false;
+  state.decodedResult = null;
+
+  const canvas = document.getElementById('resultCanvas');
+  if (canvas) {
+    canvas.width = 320;
+    canvas.height = 256;
+    const context = canvas.getContext('2d');
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  document.getElementById('decoderOutput')?.classList.add('is-empty');
+  const saveButton = document.getElementById('saveImageBtn');
+  const resetButton = document.getElementById('resetDecodedBtn');
+  if (saveButton) saveButton.disabled = true;
+  if (resetButton) resetButton.disabled = true;
+  const mode = document.getElementById('receiverMode');
+  const afc = document.getElementById('receiverAfc');
+  if (mode) mode.textContent = '--';
+  if (afc) afc.textContent = '--';
+  if (resetProgress) hideOfflineDecodeProgress();
+  if (announce) ui.toast('解码画面已重置', 'success');
 }
 
 function setReceiverStatus(text, stateClass = '') {
@@ -737,7 +802,7 @@ async function startMicrophoneReceiver() {
   const start = document.getElementById('micStartBtn');
   const stop = document.getElementById('micStopBtn');
   start.disabled = true;
-  updateSignalMeter(0);
+  updateSnrMeter();
   setReceiverStatus('请求权限', 'active');
   try {
     await state.webDecoder.startMicrophone({
@@ -761,7 +826,7 @@ async function stopMicrophoneReceiver() {
   await state.webDecoder.stopMicrophone(true);
   document.getElementById('micStartBtn').disabled = false;
   document.getElementById('micStopBtn').disabled = true;
-  updateSignalMeter(0);
+  updateSnrMeter();
   setReceiverStatus('已停止');
 }
 
@@ -828,15 +893,19 @@ async function onSelfTest() {
 export function readDspOptions() {
   const low = document.getElementById('basebandLow');
   const high = document.getElementById('basebandHigh');
+  const requestedLow = Number(low?.value ?? BASEBAND_DEFAULT.lowHz);
+  const requestedHigh = Number(high?.value ?? BASEBAND_DEFAULT.highHz);
+  const basebandSafe = Number.isFinite(requestedLow) && Number.isFinite(requestedHigh) &&
+    requestedLow >= BASEBAND_MIN_HZ && requestedLow <= BASEBAND_LOW_MAX_HZ &&
+    requestedHigh >= BASEBAND_HIGH_MIN_HZ && requestedHigh <= BASEBAND_MAX_HZ;
   return {
     afc: document.getElementById('dspAfc')?.checked === true,
     lms: document.getElementById('dspLms')?.checked === true,
     bpf: document.getElementById('dspBpf')?.checked === true,
     demodulator: 'phase',
-    baseband: {
-      lowHz: Number(low?.value ?? BASEBAND_DEFAULT.lowHz),
-      highHz: Number(high?.value ?? BASEBAND_DEFAULT.highHz),
-    },
+    baseband: basebandSafe
+      ? { lowHz: requestedLow, highHz: requestedHigh }
+      : { ...BASEBAND_DEFAULT },
   };
 }
 
@@ -847,24 +916,37 @@ function setupBasebandFilter() {
   const high = document.getElementById('basebandHigh');
   let savedLow = BASEBAND_DEFAULT.lowHz;
   let savedHigh = BASEBAND_DEFAULT.highHz;
+  let resetUnsafeSavedRange = false;
   try {
-    savedLow = Number(localStorage.getItem('sstv.basebandLowHz')) || savedLow;
-    savedHigh = Number(localStorage.getItem('sstv.basebandHighHz')) || savedHigh;
+    const storedLow = localStorage.getItem('sstv.basebandLowHz');
+    const storedHigh = localStorage.getItem('sstv.basebandHighHz');
+    if (storedLow !== null || storedHigh !== null) {
+      const parsedLow = Number(storedLow);
+      const parsedHigh = Number(storedHigh);
+      if (Number.isFinite(parsedLow) && Number.isFinite(parsedHigh)) {
+        savedLow = parsedLow;
+        savedHigh = parsedHigh;
+      } else {
+        resetUnsafeSavedRange = true;
+      }
+    }
   } catch (_) {}
-  savedLow = Math.max(BASEBAND_MIN_HZ, Math.min(BASEBAND_MAX_HZ - BASEBAND_MIN_GAP_HZ, savedLow));
-  savedHigh = Math.max(savedLow + BASEBAND_MIN_GAP_HZ, Math.min(BASEBAND_MAX_HZ, savedHigh));
+  resetUnsafeSavedRange ||= savedLow < BASEBAND_MIN_HZ || savedLow > BASEBAND_LOW_MAX_HZ ||
+    savedHigh < BASEBAND_HIGH_MIN_HZ || savedHigh > BASEBAND_MAX_HZ;
+  if (resetUnsafeSavedRange) {
+    savedLow = BASEBAND_DEFAULT.lowHz;
+    savedHigh = BASEBAND_DEFAULT.highHz;
+  }
   low.value = String(savedLow);
   high.value = String(savedHigh);
 
-  const render = (changed = null, persist = true) => {
+  const render = (persist = true) => {
     let lowHz = Number(low.value);
     let highHz = Number(high.value);
-    if (highHz - lowHz < BASEBAND_MIN_GAP_HZ) {
-      if (changed === low) lowHz = highHz - BASEBAND_MIN_GAP_HZ;
-      else highHz = lowHz + BASEBAND_MIN_GAP_HZ;
-    }
-    lowHz = Math.max(BASEBAND_MIN_HZ, Math.min(BASEBAND_MAX_HZ - BASEBAND_MIN_GAP_HZ, lowHz));
-    highHz = Math.max(lowHz + BASEBAND_MIN_GAP_HZ, Math.min(BASEBAND_MAX_HZ, highHz));
+    if (!Number.isFinite(lowHz)) lowHz = BASEBAND_DEFAULT.lowHz;
+    if (!Number.isFinite(highHz)) highHz = BASEBAND_DEFAULT.highHz;
+    lowHz = Math.max(BASEBAND_MIN_HZ, Math.min(BASEBAND_LOW_MAX_HZ, lowHz));
+    highHz = Math.max(BASEBAND_HIGH_MIN_HZ, Math.min(BASEBAND_MAX_HZ, highHz));
     low.value = String(lowHz);
     high.value = String(highHz);
     document.getElementById('basebandLowValue').textContent = `${lowHz} Hz`;
@@ -879,26 +961,111 @@ function setupBasebandFilter() {
     }
   };
 
-  button.addEventListener('click', () => {
-    const open = button.getAttribute('aria-expanded') !== 'true';
+  const setOpen = open => {
     button.setAttribute('aria-expanded', String(open));
     panel.hidden = !open;
-  });
-  low.addEventListener('input', () => render(low));
-  high.addEventListener('input', () => render(high));
+  };
+  button.addEventListener('click', () => setOpen(button.getAttribute('aria-expanded') !== 'true'));
+  low.addEventListener('input', () => render());
+  high.addEventListener('input', () => render());
   document.getElementById('basebandResetBtn').addEventListener('click', () => {
     low.value = String(BASEBAND_DEFAULT.lowHz);
     high.value = String(BASEBAND_DEFAULT.highHz);
     render();
   });
+  render(resetUnsafeSavedRange);
+  if (resetUnsafeSavedRange) {
+    ui.toast('原复基带范围会滤除 SSTV 同步/图像频率，已恢复 1000–2800 Hz');
+  }
+  return {
+    isOpen: () => !panel.hidden,
+    close: ({ restoreFocus = true } = {}) => {
+      const wasOpen = !panel.hidden;
+      setOpen(false);
+      if (restoreFocus && wasOpen) button.focus();
+    },
+  };
+}
+
+function setupPageSettings(basebandController) {
+  const toggle = document.querySelector('.rx-settings-fab');
+  const panel = toggle ? document.getElementById(toggle.getAttribute('aria-controls')) : null;
+  const scrim = document.querySelector('.rx-settings-scrim');
+  const closeButton = panel?.querySelector('.rx-settings-close');
+  if (!toggle || !panel || !scrim || !closeButton) return;
+  const settingsLabel = panel.dataset.settingsLabel || '页面设置';
+
+  const isOpen = () => toggle.getAttribute('aria-expanded') === 'true';
+  const getFocusable = () => [...panel.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )].filter(element =>
+    !element.matches('select[data-enhanced]') &&
+    !element.closest('[hidden]') &&
+    element.getAttribute('aria-hidden') !== 'true'
+  );
+
+  const setOpen = (open, { restoreFocus = true } = {}) => {
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.setAttribute('aria-label', `${open ? '关闭' : '打开'}${settingsLabel}`);
+    panel.classList.toggle('is-open', open);
+    panel.setAttribute('aria-hidden', String(!open));
+    panel.toggleAttribute('inert', !open);
+    scrim.hidden = !open;
+    document.body.classList.toggle('rx-settings-open', open);
+
+    if (open) {
+      const firstControl = panel.querySelector('.custom-select-trigger') || getFocusable()[0] || panel;
+      firstControl.focus();
+    } else {
+      basebandController?.close({ restoreFocus: false });
+      if (restoreFocus) toggle.focus();
+    }
+  };
+
+  toggle.addEventListener('click', () => setOpen(!isOpen()));
+  closeButton.addEventListener('click', () => setOpen(false));
+  scrim.addEventListener('click', () => setOpen(false));
+
   document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && !panel.hidden) {
-      panel.hidden = true;
-      button.setAttribute('aria-expanded', 'false');
-      button.focus();
+    if (event.key !== 'Escape' || !isOpen()) return;
+
+    const openSelect = panel.querySelector('.custom-select-trigger[aria-expanded="true"]');
+    if (openSelect) {
+      event.preventDefault();
+      openSelect.click();
+      openSelect.focus();
+      return;
+    }
+    if (basebandController?.isOpen()) {
+      event.preventDefault();
+      basebandController.close();
+      return;
+    }
+
+    event.preventDefault();
+    setOpen(false);
+  });
+
+  panel.addEventListener('keydown', event => {
+    if (event.key !== 'Tab' || !isOpen()) return;
+    const focusable = getFocusable();
+    if (!focusable.length) {
+      event.preventDefault();
+      panel.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
-  render(null, false);
+
+  setOpen(false, { restoreFocus: false });
 }
 
 export function readReceiveOptions() {
@@ -972,33 +1139,23 @@ async function saveDecodedImage() {
   }
 }
 
-function formatDecodeMeta(result) {
-  const baseband = result.dsp?.baseband;
-  const enabled = ['LMS', 'BPF'].filter(name => result.dsp?.[name.toLowerCase()]);
-  let dspText = result.dsp?.demodulator === 'phase' && baseband
-    ? `PHASE ${Math.round(baseband.lowHz)}–${Math.round(baseband.highHz)}Hz`
-    : 'LEGACY';
-  if (enabled.length) dspText += `+${enabled.join('+')}`;
-  if (result.dsp?.afc) {
-    dspText += result.dsp.afcLocked
-      ? ` ${result.dsp.afcOffsetHz >= 0 ? '+' : ''}${result.dsp.afcOffsetHz.toFixed(1)}Hz`
-      : ' 未锁定';
-  }
-  if (result.dsp?.lineOffsetValid > 0) {
-    const mean = result.dsp.lineOffsetMeanHz;
-    dspText += ` · 行频偏 ${result.dsp.lineOffsetValid}行 ${mean >= 0 ? '+' : ''}${mean.toFixed(1)}Hz`;
-  }
-  return `${result.mode.name} · ${result.width}×${result.height} · ${dspText}`;
-}
-
 // ---- 音频上传(WAV / MP3 等)----
 async function onAudioFile(file) {
   const loadId = ++state.audioLoadId;
+  if (state.realtimeDecode) stopRealtimeDecode(false);
+  resetDecodedResult();
+  state.audioPlayer?.clear();
+  state.uploadedAudio = null;
+  document.getElementById('decodeUploadedBtn').disabled = true;
+  document.getElementById('realtimeDecodeBtn').disabled = true;
+  for (const id of ['decodeStartSec', 'decodeEndSec']) document.getElementById(id).disabled = true;
+  document.getElementById('audioMeta').textContent = 'LOADING AUDIO...';
+  const spectrum = document.getElementById('spectrum');
+  if (spectrum) spectrum.getContext('2d').clearRect(0, 0, spectrum.width, spectrum.height);
   try {
     ui.toast('解码音频文件中…');
     const { sampleRate, samples, format } = await decodeAudioFile(file);
     if (loadId !== state.audioLoadId) return;
-    if (state.realtimeDecode) stopRealtimeDecode(false);
     state.uploadedAudio = { sampleRate, samples, format };
 
     // 加载播放器会先显示时间轴，使两个 canvas 都能取得正确尺寸。

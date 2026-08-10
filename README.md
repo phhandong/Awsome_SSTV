@@ -8,10 +8,10 @@
 
 - 🎨 **生成器**:选择图片 + 模式,合成 SSTV 测试音频,可播放 / 下载 WAV
 - 📡 **解码器**:上传 **WAV 或 MP3** 文件,解码出图像;支持频谱瀑布图可视化(700–2700 Hz)
-- 🎙️ **实时接收**:在 HTTPS 或 localhost 下使用麦克风，AudioWorklet 采集、Worker 解码并逐行更新图像
+- 🎙️ **实时接收**:在 HTTPS 或 localhost 下使用麦克风，AudioWorklet 采集、Worker 解码并逐行更新图像，同时显示 SSTV 带内/邻带估算音频 SNR
 - 📡 **无 VIS 启动**:自动比较连续同步脉冲的行周期识别模式，也可手动指定模式从信号中途开始接收
 - ⏱️ **起始时间偏移**:可设置从音频的第几秒开始解码(跳过前导噪声 / 选取特定帧)
-- 🎛️ **DSP 开关**:可独立启用/关闭 AFC 自动频偏校正、CLMS/NLMS 自适应线增强和 BPF 带通滤波
+- 🎛️ **DSP 开关**:可独立启用/关闭 AFC 自动频偏校正、CLMS/NLMS 自适应线增强和 BPF 带通滤波；复基带设置会保留 SSTV 必需的 1100–2300 Hz 协议频率
 - ⟲ **自测闭环**:一键生成 → 解码 → 原图对照 + PSNR 指标
 - 📻 **支持模式**:MMSSTV 接收目录的 43 种模式，包括六种窄带 N/MC 模式
 - 📱 响应式暗色主题,移动端 / 桌面端自适应
@@ -97,7 +97,7 @@ Awsome_SSTV/
 │   ├── sync-acquisition.js  # MMSSTV 同步周期自动识别与手动模式解析
 │   ├── demod.js            # FM 解调(解析信号瞬时频率)+ 同步搜索 + AutoSlant
 │   ├── audiodecode.js      # 统一音频解码:WAV(纯JS)+ MP3(Web Audio)+ 起始时间切片
-│   ├── fft.js              # 频谱瀑布图
+│   ├── fft.js              # 频谱瀑布图与流式音频 SNR 估算
 │   ├── ui.js               # Canvas 渲染 / 拖放 / PSNR
 │   └── app.js              # 入口,事件编排,自测闭环
 ├── verify.js               # Node 闭环验证(encode→WAV→decode→PSNR)
@@ -138,6 +138,7 @@ MODES[95] = { visCode:95, name:'PD120', width:640, height:480, ... };
 ```bash
 node verify.js     # 核心:8 模式闭环 PSNR
 node verify-dsp.js # DSP:AFC/LMS/BPF 算法与开关
+node verify-snr.js # 流式音频 SNR 估算与分块一致性
 node verify-stream.js # 流式重采样、CPLL、VIS/FSK、同步自动启动、手动启动
 node verify-audio.js # WAV:PCM/float/边界校验
 node uitest.js     # UI:装配与模式填充(jsdom)

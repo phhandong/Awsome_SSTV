@@ -118,6 +118,8 @@ export class AudioPlayer {
 
     // 先显示播放器，确保 canvas 能取得当前布局尺寸。
     this.container.hidden = false;
+    this.container.classList.remove('is-idle');
+    this.playPauseBtn.disabled = false;
 
     // 绘制波形
     this.drawWaveform();
@@ -129,6 +131,26 @@ export class AudioPlayer {
     this.resetSelection();
     this.updatePlaybackPosition(0);
 
+  }
+
+  clear() {
+    this.stop();
+    this.samples = null;
+    this.audioBuffer = null;
+    this.sampleRate = 0;
+    this.duration = 0;
+    this.selectionStart = 0;
+    this.selectionEnd = 1;
+    this.updateSelection();
+    this.updatePlaybackPosition(0);
+    this.durationEl.textContent = '0:00';
+    this.playPauseBtn.disabled = true;
+    this.container.classList.add('is-idle');
+
+    const canvas = this.waveformCanvas;
+    const context = canvas.getContext('2d', { alpha: true });
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    this.onSelectionChange(this.getSelectionTime());
   }
 
   drawWaveform() {

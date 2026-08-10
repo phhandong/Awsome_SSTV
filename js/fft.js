@@ -52,6 +52,147 @@ export function magnitudeSpectrum(samples, start, fftSize, sr) {
   return mag;
 }
 
+const MIN_SNR_DB = -10;
+const MAX_SNR_DB = 40;
+const SNR_SILENCE_POWER = 1e-12;
+
+/**
+ * Estimate audio-band SNR without coupling the metric to the SSTV decoder.
+ * Adjacent-band noise PSD is projected onto the selected signal bandwidth.
+ */
+export class StreamingSnrEstimator {
+  constructor(sampleRate, {
+    lowHz = 1000,
+    highHz = 2800,
+    fftSize = 2048,
+    hopSize = 1024,
+    smoothing = 0.25,
+  } = {}) {
+    if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+      throw new RangeError('sampleRate must be a positive finite number');
+    }
+    if (!Number.isFinite(lowHz) || !Number.isFinite(highHz)
+        || lowHz <= 0 || highHz <= lowHz || highHz >= sampleRate / 2) {
+      throw new RangeError('lowHz and highHz must satisfy 0 < lowHz < highHz < Nyquist');
+    }
+    if (!Number.isInteger(fftSize) || fftSize < 2 || (fftSize & (fftSize - 1)) !== 0) {
+      throw new RangeError('fftSize must be a power of two');
+    }
+    if (!Number.isInteger(hopSize) || hopSize < 1 || hopSize > fftSize) {
+      throw new RangeError('hopSize must be an integer between 1 and fftSize');
+    }
+    if (!Number.isFinite(smoothing) || smoothing < 0 || smoothing > 1) {
+      throw new RangeError('smoothing must be between 0 and 1');
+    }
+
+    this.sampleRate = sampleRate;
+    this.fftSize = fftSize;
+    this.hopSize = hopSize;
+    this.smoothing = smoothing;
+    this._window = new Float32Array(fftSize);
+    this._windowEnergy = 0;
+    for (let i = 0; i < fftSize; i++) {
+      const value = 0.5 * (1 - Math.cos(2 * Math.PI * i / (fftSize - 1)));
+      this._window[i] = value;
+      this._windowEnergy += value * value;
+    }
+
+    const binHz = sampleRate / fftSize;
+    const halfBandWidth = (highHz - lowHz) / 2;
+    const noiseLowHz = Math.max(100, lowHz - halfBandWidth);
+    const noiseHighHz = Math.min(sampleRate / 2, highHz + halfBandWidth);
+    this._signalBins = [];
+    this._noiseBins = [];
+    for (let bin = 0; bin <= fftSize / 2; bin++) {
+      const frequency = bin * binHz;
+      if (frequency >= lowHz && frequency <= highHz) {
+        this._signalBins.push(bin);
+      } else if ((frequency >= noiseLowHz && frequency < lowHz)
+                 || (frequency > highHz && frequency <= noiseHighHz)) {
+        this._noiseBins.push(bin);
+      }
+    }
+    if (!this._signalBins.length || !this._noiseBins.length) {
+      throw new RangeError('FFT resolution is too low for the requested signal and noise bands');
+    }
+
+    this._binHz = binHz;
+    this.reset();
+  }
+
+  push(samples) {
+    if (!(samples instanceof Float32Array)) throw new TypeError('samples must be a Float32Array');
+    let offset = 0;
+    let latest = null;
+    while (offset < samples.length) {
+      const count = Math.min(this.fftSize - this._buffered, samples.length - offset);
+      this._buffer.set(samples.subarray(offset, offset + count), this._buffered);
+      this._buffered += count;
+      offset += count;
+      if (this._buffered === this.fftSize) {
+        latest = this._analyze(this._buffer);
+        this._buffer.copyWithin(0, this.hopSize);
+        this._buffered = this.fftSize - this.hopSize;
+      }
+    }
+    return latest;
+  }
+
+  reset() {
+    this._buffer = new Float32Array(this.fftSize);
+    this._buffered = 0;
+    this._smoothedSnrDb = null;
+  }
+
+  _analyze(samples) {
+    let timePower = 0;
+    for (let i = 0; i < samples.length; i++) {
+      const sample = Number.isFinite(samples[i]) ? samples[i] : 0;
+      timePower += sample * sample;
+    }
+    timePower /= samples.length;
+    if (timePower <= SNR_SILENCE_POWER) {
+      this._smoothedSnrDb = null;
+      return { snrDb: null, signalPower: 0, noisePower: 0 };
+    }
+
+    const re = new Float32Array(this.fftSize);
+    const im = new Float32Array(this.fftSize);
+    for (let i = 0; i < this.fftSize; i++) {
+      re[i] = (Number.isFinite(samples[i]) ? samples[i] : 0) * this._window[i];
+    }
+    fftRadix2(re, im);
+
+    const psdScale = 1 / (this.sampleRate * this._windowEnergy);
+    const psdAt = bin => {
+      const oneSided = (bin === 0 || bin === this.fftSize / 2) ? 1 : 2;
+      return (re[bin] * re[bin] + im[bin] * im[bin]) * psdScale * oneSided;
+    };
+    let bandPsd = 0;
+    for (const bin of this._signalBins) bandPsd += psdAt(bin);
+    bandPsd /= this._signalBins.length;
+    let noisePsd = 0;
+    for (const bin of this._noiseBins) noisePsd += psdAt(bin);
+    noisePsd /= this._noiseBins.length;
+
+    const effectiveBandWidth = this._signalBins.length * this._binHz;
+    const noisePower = Math.max(0, noisePsd * effectiveBandWidth);
+    const signalPower = Math.max(0, (bandPsd - noisePsd) * effectiveBandWidth);
+    let instantaneousSnrDb = MIN_SNR_DB;
+    if (signalPower > 0 && noisePower <= 0) instantaneousSnrDb = MAX_SNR_DB;
+    else if (signalPower > 0) {
+      instantaneousSnrDb = Math.max(
+        MIN_SNR_DB,
+        Math.min(MAX_SNR_DB, 10 * Math.log10(signalPower / noisePower)),
+      );
+    }
+    this._smoothedSnrDb = this._smoothedSnrDb === null
+      ? instantaneousSnrDb
+      : this._smoothedSnrDb + this.smoothing * (instantaneousSnrDb - this._smoothedSnrDb);
+    return { snrDb: this._smoothedSnrDb, signalPower, noisePower };
+  }
+}
+
 // 把一个时间片绘制成频谱图的一列：横轴时间向右，纵轴频率由低到高。
 // 画布坐标向下递增，所以高频在上、低频在下。
 export function drawSpectrumColumn(specCtx, mag, column, sr, fftSize, fLow, fHigh, height) {

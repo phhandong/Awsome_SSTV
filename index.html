@@ -36,14 +36,6 @@
       <span><strong>AWESOME SSTV</strong><small>Slow Scan Signal Lab</small></span>
     </a>
     <div class="topbar-actions">
-      <label class="mode-select console-select">
-        <span>RX MODE</span>
-        <select id="modeSelect" aria-label="选择 SSTV 模式"></select>
-      </label>
-      <label class="auto-receive" title="自动尝试 VIS、FSK 和同步脉冲识别模式">
-        <input type="checkbox" id="autoReceive" checked aria-label="启用自动接收模式">
-        <span>AUTO</span>
-      </label>
       <button id="themeToggle" class="icon-btn" title="切换主题" aria-label="切换亮色或暗色主题">🌙</button>
     </div>
   </header>
@@ -52,11 +44,8 @@
     <section class="console-intro" aria-labelledby="page-title">
       <div>
         <p class="eyebrow"><span></span> RX / SIGNAL RECOVERY</p>
-        <h1 id="page-title">慢扫描接收终端</h1>
+        <h1 id="page-title">SSTV 接收终端</h1>
         <p>捕获音频载波，校准同步脉冲，在浏览器本地重建图像。</p>
-      </div>
-      <div class="frequency-readout" aria-label="默认复基带范围">
-        <small>BASEBAND</small><strong>1.000 — 2.800</strong><span>kHz</span>
       </div>
     </section>
 
@@ -66,6 +55,8 @@
         <span class="panel-state"><i></i> STANDBY</span>
       </div>
 
+      <div class="decoder-workspace">
+        <div id="decoderControls" class="decoder-controls">
       <div class="input-deck">
         <div class="console-module upload-module">
           <div class="module-label"><span>FILE CHANNEL</span><b>离线音频</b></div>
@@ -84,30 +75,38 @@
               <button id="micStopBtn" class="btn mini ghost" aria-label="停止麦克风接收" disabled>■ 停止</button>
             </div>
           </div>
-          <div class="signal-meter-wrap">
-            <div class="signal-meter-label"><span>INPUT STRENGTH</span><output id="receiverLevelText">0%</output></div>
-            <div id="receiverMeter" class="signal-meter" role="progressbar" aria-label="实时信号强度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="offlineDecodeProgress" class="signal-meter-wrap receiver-meter-panel is-idle" title="12 段仪表显示音频信噪比，下方细轨显示解码进度">
+            <div class="signal-meter-label"><span>EST. AUDIO SNR</span><output id="receiverLevelText">-- dB</output></div>
+            <div id="receiverMeter" class="signal-meter" role="progressbar" aria-label="实时估算音频信噪比" aria-valuemin="-10" aria-valuemax="30" aria-valuetext="等待信号">
               <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
               <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
               <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
               <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+            </div>
+            <div class="receiver-decode-progress" aria-live="polite" aria-atomic="true">
+              <div class="receiver-decode-head">
+                <span>DECODE</span>
+                <span id="offlineDecodeProgressText">等待解码</span>
+                <output id="offlineDecodeProgressValue">0%</output>
+              </div>
+              <div id="offlineDecodeProgressBar" class="receiver-decode-track" role="progressbar" aria-label="解码进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="等待解码，0%"><div class="bar"></div></div>
             </div>
           </div>
           <div class="receiver-telemetry" role="status" aria-live="polite">
             <span><small>STATUS</small><strong id="receiverStatus">待机</strong></span>
             <span><small>MODE</small><strong id="receiverMode">--</strong></span>
             <span><small>AFC</small><strong id="receiverAfc">--</strong></span>
-            <span><small>ROWS</small><strong id="receiverRows">0 / 0</strong></span>
           </div>
         </div>
       </div>
 
-      <div class="audio-player-wrapper" id="audioPlayerWrapper" hidden>
+      <div class="audio-player-wrapper is-idle" id="audioPlayerWrapper">
         <div class="audio-player-controls">
-          <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放或暂停">▶</button>
+          <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放或暂停" disabled>▶</button>
           <div class="audio-timeline-container">
             <canvas id="spectrum" class="audio-spectrum-bg" aria-label="频谱瀑布图"></canvas>
             <canvas id="audioWaveform" class="audio-waveform" aria-label="音频波形时间轴"></canvas>
+            <span class="audio-player-empty" aria-hidden="true">NO AUDIO BUFFER</span>
             <div class="audio-timeline-overlay">
               <div class="audio-selection" id="audioSelection"><div class="audio-selection-handle audio-selection-start" data-handle="start"></div><div class="audio-selection-handle audio-selection-end" data-handle="end"></div></div>
               <div class="audio-playhead" id="audioPlayhead"></div>
@@ -127,48 +126,74 @@
 
       <div class="control-rack">
         <div class="decode-options"><span class="opt-hint" id="audioMeta" role="status" aria-live="polite">NO FILE LOADED</span></div>
-        <div class="dsp-options decode-options" aria-label="DSP 选项">
-          <span class="opt-hint">DSP BANK</span>
-          <label class="opt"><input type="checkbox" id="dspAfc" aria-label="启用 AFC 自动频率控制"><span>AFC</span></label>
-          <label class="opt"><input type="checkbox" id="dspLms" aria-label="启用 LMS 自适应滤波"><span>LMS</span></label>
-          <label class="opt"><input type="checkbox" id="dspBpf" aria-label="启用传统带通滤波器"><span>旧 BPF</span></label>
-          <button id="basebandFilterBtn" class="btn filter-range-toggle" type="button" aria-expanded="false" aria-controls="basebandFilterPanel">复基带 <span id="basebandFilterLabel">1000–2800 Hz</span></button>
-        </div>
-        <div id="basebandFilterPanel" class="filter-range-panel" hidden>
-          <div class="filter-slider-row"><label for="basebandLow">低截止 <output id="basebandLowValue">1000 Hz</output></label><input id="basebandLow" type="range" min="700" max="3000" step="10" value="1000"></div>
-          <div class="filter-slider-row"><label for="basebandHigh">高截止 <output id="basebandHighValue">2800 Hz</output></label><input id="basebandHigh" type="range" min="700" max="3000" step="10" value="2800"></div>
-          <div class="filter-range-footer"><span id="basebandCenterValue">中心 1900 Hz</span><button id="basebandResetBtn" class="btn-link" type="button">恢复默认</button></div>
-        </div>
       </div>
 
       <div class="btn-row decode-actions two-actions">
         <button id="realtimeDecodeBtn" class="btn accent command-btn" disabled aria-label="边播放边实时解码上传的音频"><span>◉</span> 实时解码</button>
-        <button id="decodeUploadedBtn" class="btn primary command-btn" disabled aria-label="解码上传的音频"><span>▶</span> 解码上传的音频</button>
+        <button id="decodeUploadedBtn" class="btn primary command-btn" disabled aria-label="极速解码上传的音频">⚡️极速解码</button>
       </div>
-      <div id="offlineDecodeProgress" class="offline-decode-progress" hidden aria-live="polite" aria-atomic="true">
-        <div class="offline-progress-head">
-          <span class="offline-progress-ident"><i aria-hidden="true"></i> OFFLINE DECODER</span>
-          <span id="offlineDecodeProgressText" class="offline-progress-status">正在分析 VIS / 同步</span>
-          <output id="offlineDecodeProgressValue" class="offline-progress-value">--</output>
         </div>
-        <div id="offlineDecodeProgressBar" class="offline-progress-track is-indeterminate" role="progressbar" aria-label="离线解码进度" aria-valuemin="0" aria-valuemax="100" aria-valuetext="正在分析 VIS / 同步">
-          <div class="bar"></div>
-        </div>
-      </div>
-      <div class="progress" id="decProgress" hidden role="progressbar" aria-label="解码进度"><div class="bar"></div></div>
 
-      <div class="result-wrap console-screen">
+      <div id="decoderOutput" class="result-wrap console-screen is-empty">
         <div class="result-heading">
-          <div class="label"><span>IMAGE BUFFER</span> 解码结果 <small id="resultMeta" class="meta" role="status" aria-live="polite"></small></div>
+          <div class="label"><span>IMAGE BUFFER</span> 解码结果</div>
           <div class="image-export-tools">
+            <button id="resetDecodedBtn" class="image-reset-btn" type="button" disabled title="重置解码画面" aria-label="重置解码画面"><span aria-hidden="true">↺</span></button>
             <label class="format-select-wrap" title="图片保存格式"><select id="imageFormat" aria-label="图片保存格式"><option value="png">PNG</option><option value="bmp">BMP</option></select></label>
             <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片"><span class="image-save-icon" aria-hidden="true">⇩</span></button>
           </div>
         </div>
-        <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
+        <div class="result-canvas-stage">
+          <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
+          <span class="result-empty-state" aria-hidden="true">NO DECODED FRAME</span>
+        </div>
+      </div>
       </div>
     </section>
   </main>
+
+  <button id="rxSettingsToggle" class="rx-settings-fab" type="button" aria-expanded="false" aria-controls="rxSettingsPanel" aria-label="打开接收设置" title="接收设置">
+    <span aria-hidden="true">⚙</span>
+  </button>
+  <div id="rxSettingsScrim" class="rx-settings-scrim" hidden></div>
+  <aside id="rxSettingsPanel" class="rx-settings-panel" data-settings-label="接收设置" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="rxSettingsTitle" tabindex="-1" inert>
+    <header class="rx-settings-header">
+      <div><span class="rx-settings-kicker">RX CONTROL / LOCAL DSP</span><h2 id="rxSettingsTitle">接收设置</h2></div>
+      <button id="rxSettingsClose" class="rx-settings-close" type="button" aria-label="关闭接收设置">×</button>
+    </header>
+    <div class="rx-settings-body">
+      <section class="rx-settings-section" aria-labelledby="rxModeSettingsTitle">
+        <div class="rx-settings-section-head"><span>01 / RECEPTION</span><strong id="rxModeSettingsTitle">模式与同步</strong></div>
+        <div class="rx-mode-settings">
+          <label class="mode-select console-select">
+            <span>RX MODE</span>
+            <select id="modeSelect" aria-label="选择 SSTV 模式"></select>
+          </label>
+          <label class="auto-receive" title="自动尝试 VIS、FSK 和同步脉冲识别模式">
+            <input type="checkbox" id="autoReceive" checked aria-label="启用自动接收模式">
+            <span>AUTO</span>
+          </label>
+        </div>
+      </section>
+
+      <section class="rx-settings-section" aria-labelledby="rxDspSettingsTitle">
+        <div class="rx-settings-section-head"><span>02 / SIGNAL PATH</span><strong id="rxDspSettingsTitle">DSP BANK</strong></div>
+        <div class="dsp-options decode-options" aria-label="DSP 选项">
+          <label class="opt"><input type="checkbox" id="dspAfc" checked aria-label="启用 AFC 自动频率控制"><span>AFC</span></label>
+          <label class="opt"><input type="checkbox" id="dspLms" checked aria-label="启用 LMS 自适应滤波"><span>LMS</span></label>
+          <label class="opt"><input type="checkbox" id="dspBpf" aria-label="启用传统带通滤波器"><span>旧 BPF</span></label>
+          <button id="basebandFilterBtn" class="btn filter-range-toggle" type="button" aria-expanded="false" aria-controls="basebandFilterPanel" title="必须覆盖 SSTV 的 1100–2300 Hz 协议频率">复基带 <span id="basebandFilterLabel">1000–2800 Hz</span></button>
+        </div>
+        <div id="basebandFilterPanel" class="filter-range-panel" hidden>
+          <div class="filter-slider-grid" role="group" aria-label="复基带截止频率">
+            <div class="filter-slider-row"><label for="basebandLow">低截止 <output id="basebandLowValue">1000 Hz</output></label><input id="basebandLow" type="range" min="700" max="1000" step="10" value="1000"></div>
+            <div class="filter-slider-row"><label for="basebandHigh">高截止 <output id="basebandHighValue">2800 Hz</output></label><input id="basebandHigh" type="range" min="2400" max="3000" step="10" value="2800"></div>
+          </div>
+          <div class="filter-range-footer"><span id="basebandCenterValue">中心 1900 Hz</span><button id="basebandResetBtn" class="btn-link" type="button">恢复默认</button></div>
+        </div>
+      </section>
+    </div>
+  </aside>
 
   <footer class="radio-footer" role="contentinfo">
     <span>AWESOME SSTV · LOCAL SIGNAL PROCESSING</span>

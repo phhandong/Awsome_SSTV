@@ -54,9 +54,49 @@ async function verifyViewport(name, viewport) {
     drawerHidden: document.getElementById('navDrawer').getAttribute('aria-hidden'),
     navExpanded: document.getElementById('navToggle').getAttribute('aria-expanded'),
     decodeButtons: [...document.querySelectorAll('.decode-actions button')].map(button => button.id),
+    fastDecodeLabel: document.getElementById('decodeUploadedBtn')?.textContent,
+    persistentControls: {
+      progressVisible: !document.getElementById('offlineDecodeProgress')?.hidden,
+      progressIdle: document.getElementById('offlineDecodeProgress')?.classList.contains('is-idle'),
+      progressMerged: document.getElementById('offlineDecodeProgress')?.contains(document.getElementById('receiverMeter')) &&
+        document.getElementById('offlineDecodeProgress')?.contains(document.getElementById('offlineDecodeProgressBar')),
+      progressValue: document.getElementById('offlineDecodeProgressBar')?.getAttribute('aria-valuenow'),
+      playerVisible: !document.getElementById('audioPlayerWrapper')?.hidden,
+      playerIdle: document.getElementById('audioPlayerWrapper')?.classList.contains('is-idle'),
+      playDisabled: document.getElementById('audioPlayPauseBtn')?.disabled,
+    },
     hasEncoder: !!document.getElementById('encodeBtn'),
     meterCells: document.querySelectorAll('#receiverMeter .signal-cell').length,
     deerflow: document.querySelector('.deerflow-mark')?.href,
+    frequencyReadouts: document.querySelectorAll('.frequency-readout').length,
+    decodedMetadata: document.querySelectorAll('#resultMeta, .result-heading .meta').length,
+    rowsTelemetry: document.querySelectorAll('#receiverRows').length,
+    workspace: (() => {
+      const controls = document.getElementById('decoderControls');
+      const output = document.getElementById('decoderOutput');
+      const canvas = document.getElementById('resultCanvas');
+      const box = element => {
+        const rect = element.getBoundingClientRect();
+        return { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom };
+      };
+      return {
+        sameParent: controls?.parentElement === output?.parentElement && controls?.parentElement?.classList.contains('decoder-workspace'),
+        controls: box(controls),
+        output: box(output),
+        canvas: box(canvas),
+      };
+    })(),
+    settings: {
+      expanded: document.getElementById('rxSettingsToggle')?.getAttribute('aria-expanded'),
+      hidden: document.getElementById('rxSettingsPanel')?.getAttribute('aria-hidden'),
+      inert: document.getElementById('rxSettingsPanel')?.hasAttribute('inert'),
+      ownsControls: ['modeSelect', 'autoReceive', 'dspAfc', 'dspLms', 'dspBpf', 'basebandFilterBtn']
+        .every(id => document.getElementById('rxSettingsPanel')?.contains(document.getElementById(id))),
+      topbarSettings: document.querySelectorAll('.topbar-actions #modeSelect, .topbar-actions #autoReceive').length,
+      afc: document.getElementById('dspAfc')?.checked,
+      lms: document.getElementById('dspLms')?.checked,
+    },
+    initialTheme: document.documentElement.getAttribute('data-theme'),
     fontSizes: {
       body: parseFloat(getComputedStyle(document.body).fontSize),
       intro: parseFloat(getComputedStyle(document.querySelector('.console-intro > div:first-child > p:last-child')).fontSize),
@@ -71,30 +111,148 @@ async function verifyViewport(name, viewport) {
   if (decoderShell.decodeButtons.join('|') !== 'realtimeDecodeBtn|decodeUploadedBtn' || decoderShell.hasEncoder) {
     throw new Error(`${name}: decoder does not expose exactly the two requested commands`);
   }
+  if (decoderShell.fastDecodeLabel !== '⚡️极速解码' ||
+      !decoderShell.persistentControls.progressVisible || !decoderShell.persistentControls.progressIdle ||
+      !decoderShell.persistentControls.progressMerged || decoderShell.persistentControls.progressValue !== '0' ||
+      !decoderShell.persistentControls.playerVisible || !decoderShell.persistentControls.playerIdle ||
+      !decoderShell.persistentControls.playDisabled) {
+    throw new Error(`${name}: permanent progress/player state or fast decode label is invalid ${JSON.stringify(decoderShell.persistentControls)}`);
+  }
   if (decoderShell.meterCells !== 12 || decoderShell.deerflow !== 'https://deerflow.tech/') {
     throw new Error(`${name}: signal meter or design credit is missing`);
+  }
+  if (decoderShell.frequencyReadouts !== 0 || decoderShell.decodedMetadata !== 0 ||
+      decoderShell.rowsTelemetry !== 0 || !decoderShell.workspace.sameParent) {
+    throw new Error(`${name}: obsolete frequency readout remains or decoder workspace is malformed`);
+  }
+  const { controls, output, canvas: outputCanvas } = decoderShell.workspace;
+  const wideWorkspace = viewport.width >= 1024;
+  const workspaceLayoutOk = wideWorkspace
+    ? Math.abs(controls.top - output.top) <= 2 && output.left >= controls.right - 1 && outputCanvas.bottom <= viewport.height + 1
+    : output.top >= controls.bottom - 1 && Math.abs(controls.left - output.left) <= 2 && Math.abs(controls.right - output.right) <= 2;
+  if (!workspaceLayoutOk) {
+    throw new Error(`${name}: decoder workspace is not ${wideWorkspace ? 'side-by-side in the first viewport' : 'vertically stacked'} ${JSON.stringify(decoderShell.workspace)}`);
+  }
+  if (decoderShell.settings.expanded !== 'false' || decoderShell.settings.hidden !== 'true' ||
+      !decoderShell.settings.inert || !decoderShell.settings.ownsControls || decoderShell.settings.topbarSettings !== 0 ||
+      !decoderShell.settings.afc || !decoderShell.settings.lms || decoderShell.initialTheme !== 'dark') {
+    throw new Error(`${name}: receiver settings do not start collapsed or do not own P2/P3 controls`);
   }
   if (decoderShell.fontSizes.body < 16 || decoderShell.fontSizes.intro < 15 ||
       decoderShell.fontSizes.command < 15 || decoderShell.fontSizes.micro < 11 ||
       decoderShell.fontSizes.panelTitle < 16) {
     throw new Error(`${name}: console type remains too small ${JSON.stringify(decoderShell.fontSizes)}`);
   }
+  if (await page.getAttribute('html', 'data-theme') !== 'light') await page.click('#themeToggle');
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-theme') === 'light');
+  const receiverContrast = await page.evaluate(() => {
+    const style = (selector, pseudo = null) => getComputedStyle(document.querySelector(selector), pseudo);
+    return {
+      panel: style('.signal-meter-wrap').backgroundColor,
+      signal: style('.signal-cell').backgroundColor,
+      signalBorder: style('.signal-cell').borderColor,
+      progress: style('.receiver-decode-track').backgroundColor,
+      progressBorder: style('.receiver-decode-track').borderColor,
+      playhead: style('.audio-playhead').backgroundColor,
+      playheadMarker: style('.audio-playhead', '::before').backgroundColor,
+    };
+  });
+  if (receiverContrast.signal === receiverContrast.panel || receiverContrast.progress === receiverContrast.panel ||
+      receiverContrast.signalBorder === receiverContrast.panel || receiverContrast.progressBorder === receiverContrast.panel ||
+      receiverContrast.playhead !== 'rgb(59, 130, 246)' || receiverContrast.playheadMarker !== 'rgb(59, 130, 246)') {
+    throw new Error(`${name}: receiver contrast or blue playhead styling is invalid ${JSON.stringify(receiverContrast)}`);
+  }
+  const telemetryLayout = await page.evaluate(() => {
+    const cells = [...document.querySelectorAll('.receiver-telemetry > span')];
+    const status = document.getElementById('receiverStatus');
+    const original = status.textContent;
+    status.textContent = '已锁定 · 同步 · PD120';
+    const result = {
+      widths: cells.map(cell => cell.getBoundingClientRect().width),
+      statusFits: status.scrollWidth <= status.clientWidth + 1,
+      statusWraps: getComputedStyle(status).whiteSpace !== 'nowrap',
+    };
+    status.textContent = original;
+    return result;
+  });
+  if (viewport.width >= 681 && (!(telemetryLayout.widths[0] > telemetryLayout.widths[1]) ||
+      !telemetryLayout.statusFits || !telemetryLayout.statusWraps)) {
+    throw new Error(`${name}: STATUS telemetry is still clipped ${JSON.stringify(telemetryLayout)}`);
+  }
   await page.click('#navToggle');
   if (await page.getAttribute('#navDrawer', 'aria-hidden') !== 'false') throw new Error(`${name}: navigation did not open`);
   await clickVisibleScrim(page);
   if (await page.getAttribute('#navDrawer', 'aria-hidden') !== 'true') throw new Error(`${name}: navigation did not close`);
 
+  await page.click('#rxSettingsToggle');
+  await page.waitForFunction(() => document.getElementById('rxSettingsPanel').getAttribute('aria-hidden') === 'false');
+  await page.click('#rxSettingsPanel .custom-select-trigger');
+  await page.click('#rxSettingsPanel .custom-select-option[data-value="12"]');
+  await page.uncheck('#autoReceive');
+  const receiveOptions = await page.evaluate(() => import('./js/app.js').then(app => app.readReceiveOptions()));
+  if (receiveOptions.mode !== 12 || 'autoSync' in receiveOptions) {
+    throw new Error(`${name}: visible receiver settings did not update manual receive mode`);
+  }
+  await page.check('#autoReceive');
+  await page.click('#basebandFilterBtn');
+
+  const settingsLayout = await page.evaluate(() => {
+    const panel = document.getElementById('rxSettingsPanel').getBoundingClientRect();
+    const fab = document.getElementById('rxSettingsToggle').getBoundingClientRect();
+    const low = document.getElementById('basebandLow').closest('.filter-slider-row').getBoundingClientRect();
+    const high = document.getElementById('basebandHigh').closest('.filter-slider-row').getBoundingClientRect();
+    return {
+      expanded: document.getElementById('rxSettingsToggle').getAttribute('aria-expanded'),
+      hidden: document.getElementById('rxSettingsPanel').getAttribute('aria-hidden'),
+      filterHidden: document.getElementById('basebandFilterPanel').hidden,
+      slidersSameRow: Math.abs(low.top - high.top) <= 2 && low.right <= high.left + 1,
+      panelInViewport: panel.left >= 0 && panel.top >= 0 && panel.right <= innerWidth && panel.bottom <= innerHeight,
+      fabInViewport: fab.left >= 0 && fab.top >= 0 && fab.right <= innerWidth && fab.bottom <= innerHeight,
+      overflow: document.documentElement.scrollWidth - innerWidth,
+    };
+  });
+  if (settingsLayout.expanded !== 'true' || settingsLayout.hidden !== 'false' || settingsLayout.filterHidden ||
+      !settingsLayout.slidersSameRow || !settingsLayout.panelInViewport || !settingsLayout.fabInViewport ||
+      settingsLayout.overflow > 1) {
+    throw new Error(`${name}: receiver settings/P1 layout is invalid ${JSON.stringify(settingsLayout)}`);
+  }
+  await page.screenshot({ path: `test-artifacts/${name}-settings.png`, fullPage: false });
+
+  await page.keyboard.press('Escape');
+  const firstEscape = await page.evaluate(() => ({
+    filterHidden: document.getElementById('basebandFilterPanel').hidden,
+    settingsExpanded: document.getElementById('rxSettingsToggle').getAttribute('aria-expanded'),
+  }));
+  if (!firstEscape.filterHidden || firstEscape.settingsExpanded !== 'true') {
+    throw new Error(`${name}: first Escape did not close P1 only`);
+  }
+  await page.click('#rxSettingsClose');
+  if (await page.getAttribute('#rxSettingsPanel', 'aria-hidden') !== 'true') throw new Error(`${name}: settings close button failed`);
+  await page.click('#rxSettingsToggle');
+  await page.mouse.click(2, viewport.height / 2);
+  if (await page.getAttribute('#rxSettingsPanel', 'aria-hidden') !== 'true') throw new Error(`${name}: settings scrim failed`);
+
   const meterPaint = await page.evaluate(async () => {
     const app = await import('./js/app.js');
-    app.updateSignalMeter(75);
+    app.updateSnrMeter(20);
     const meter = document.getElementById('receiverMeter');
     const active = meter.querySelectorAll('.signal-cell.is-active').length;
     const value = meter.getAttribute('aria-valuenow');
-    app.updateSignalMeter(0);
-    return { active, value, reset: meter.querySelectorAll('.signal-cell.is-active').length };
+    const text = document.getElementById('receiverLevelText').textContent;
+    app.updateSnrMeter();
+    return {
+      active,
+      value,
+      text,
+      max: meter.getAttribute('aria-valuemax'),
+      reset: meter.querySelectorAll('.signal-cell.is-active').length,
+      resetValue: meter.getAttribute('aria-valuenow'),
+    };
   });
-  if (meterPaint.active !== 9 || meterPaint.value !== '75' || meterPaint.reset !== 0) {
-    throw new Error(`${name}: segmented signal meter did not respond`);
+  if (meterPaint.active !== 9 || meterPaint.value !== '20.0' || meterPaint.text !== '20.0 dB' ||
+      meterPaint.max !== '30' ||
+      meterPaint.reset !== 0 || meterPaint.resetValue !== null) {
+    throw new Error(`${name}: segmented SNR meter did not respond`);
   }
 
   const decoded = await page.evaluate(async () => {
@@ -123,14 +281,6 @@ async function verifyViewport(name, viewport) {
   });
   if (decoded.mode !== 'B/W 8' || decoded.pixelSum <= 0) throw new Error(`${name}: Worker/canvas decode failed`);
 
-  const receiveOptions = await page.evaluate(() => {
-    document.getElementById('autoReceive').checked = false;
-    document.getElementById('modeSelect').value = '12';
-    return import('./js/app.js').then(app => app.readReceiveOptions());
-  });
-  if (receiveOptions.mode !== 12 || 'autoSync' in receiveOptions) throw new Error(`${name}: manual receive did not use modeSelect`);
-  await page.evaluate(() => { document.getElementById('autoReceive').checked = true; });
-
   for (const format of ['png', 'bmp']) {
     await page.selectOption('#imageFormat', format);
     const downloadPromise = page.waitForEvent('download');
@@ -148,6 +298,17 @@ async function verifyViewport(name, viewport) {
   if (name === 'desktop') {
     await page.setInputFiles('#wavInput', join(ROOT, 'asset', 'ROBOT36_test.mp3'));
     await page.waitForFunction(() => !document.getElementById('decodeEndSec').disabled, null, { timeout: 30000 });
+    const uploadReset = await page.evaluate(() => ({
+      empty: document.getElementById('decoderOutput').classList.contains('is-empty'),
+      saveDisabled: document.getElementById('saveImageBtn').disabled,
+      resetDisabled: document.getElementById('resetDecodedBtn').disabled,
+      playerIdle: document.getElementById('audioPlayerWrapper').classList.contains('is-idle'),
+      playDisabled: document.getElementById('audioPlayPauseBtn').disabled,
+    }));
+    if (!uploadReset.empty || !uploadReset.saveDisabled || !uploadReset.resetDisabled ||
+        uploadReset.playerIdle || uploadReset.playDisabled) {
+      throw new Error(`desktop: new upload did not reset the decoded image or activate the player ${JSON.stringify(uploadReset)}`);
+    }
     const duration = Number(await page.inputValue('#decodeEndSec'));
     await page.fill('#decodeStartSec', '1.0');
     await page.fill('#decodeEndSec', String(Math.max(1.1, duration - 1)));
@@ -244,15 +405,20 @@ async function verifyViewport(name, viewport) {
         status: document.getElementById('offlineDecodeProgressText').textContent,
         value: document.getElementById('offlineDecodeProgressValue').textContent,
         ariaText: track.getAttribute('aria-valuetext'),
+        snrMax: document.getElementById('receiverMeter').getAttribute('aria-valuemax'),
+        snrValue: document.getElementById('receiverLevelText').textContent,
       };
     });
-    if (!pdProgressStarted.visible || !pdProgressStarted.status || !pdProgressStarted.ariaText) {
+    if (!pdProgressStarted.visible || !pdProgressStarted.status || !pdProgressStarted.ariaText ||
+        pdProgressStarted.snrMax !== '30' || !pdProgressStarted.snrValue.endsWith('dB')) {
       throw new Error(`desktop: offline progress did not start ${JSON.stringify(pdProgressStarted)}`);
     }
     await page.waitForFunction(() => {
       const button = document.getElementById('decodeUploadedBtn');
       return !button.classList.contains('loading') &&
-        document.getElementById('resultMeta').textContent.startsWith('PD120');
+        document.getElementById('receiverMode').textContent === 'PD120' &&
+        document.getElementById('resultCanvas').width === 640 &&
+        document.getElementById('resultCanvas').height === 496;
     }, null, { timeout: 30000 });
     const pdElapsedMs = Date.now() - pdStartedAt;
     const pdDecoded = await page.evaluate(() => {
@@ -263,8 +429,6 @@ async function verifyViewport(name, viewport) {
       return {
         width: canvas.width,
         height: canvas.height,
-        meta: document.getElementById('resultMeta').textContent,
-        rows: document.getElementById('receiverRows').textContent,
         saveEnabled: !document.getElementById('saveImageBtn').disabled,
         sampleSum,
         progressComplete: document.getElementById('offlineDecodeProgress').classList.contains('is-complete'),
@@ -272,12 +436,28 @@ async function verifyViewport(name, viewport) {
         buttonBusy: document.getElementById('decodeUploadedBtn').hasAttribute('aria-busy'),
       };
     });
-    if (pdDecoded.width !== 640 || pdDecoded.height !== 496 || pdDecoded.rows !== '496 / 496' ||
+    if (pdDecoded.width !== 640 || pdDecoded.height !== 496 ||
         !pdDecoded.saveEnabled || pdDecoded.sampleSum <= 0 || !pdDecoded.progressComplete ||
         pdDecoded.progressValue !== '100' || pdDecoded.buttonBusy) {
       throw new Error(`desktop: PD120 offline decode failed ${JSON.stringify(pdDecoded)}`);
     }
-    await page.waitForFunction(() => document.getElementById('offlineDecodeProgress').hidden, null, { timeout: 3000 });
+    await page.click('#resetDecodedBtn');
+    const manualReset = await page.evaluate(() => ({
+      width: document.getElementById('resultCanvas').width,
+      height: document.getElementById('resultCanvas').height,
+      saveDisabled: document.getElementById('saveImageBtn').disabled,
+      resetDisabled: document.getElementById('resetDecodedBtn').disabled,
+      empty: document.getElementById('decoderOutput').classList.contains('is-empty'),
+    }));
+    if (manualReset.width !== 320 || manualReset.height !== 256 ||
+        !manualReset.saveDisabled || !manualReset.resetDisabled || !manualReset.empty) {
+      throw new Error(`desktop: manual decoded-image reset failed ${JSON.stringify(manualReset)}`);
+    }
+    await page.waitForFunction(() => {
+      const panel = document.getElementById('offlineDecodeProgress');
+      return !panel.hidden && panel.classList.contains('is-idle') &&
+        document.getElementById('offlineDecodeProgressBar').getAttribute('aria-valuenow') === '0';
+    }, null, { timeout: 3000 });
     console.log(`desktop: real PD120 offline decode ${pdElapsedMs}ms`);
   }
 
@@ -285,7 +465,7 @@ async function verifyViewport(name, viewport) {
   await page.waitForFunction(() => ['搜索信号', '已锁定'].includes(document.getElementById('receiverStatus').textContent));
   await page.click('#micStopBtn');
   await page.waitForFunction(() => document.getElementById('receiverStatus').textContent === '已停止');
-  if (await page.getAttribute('#receiverMeter', 'aria-valuenow') !== '0') throw new Error(`${name}: signal meter did not reset after stop`);
+  if (await page.getAttribute('#receiverMeter', 'aria-valuenow') !== null) throw new Error(`${name}: SNR meter did not reset after stop`);
 
   const layout = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - window.innerWidth,
@@ -310,6 +490,14 @@ async function verifyViewport(name, viewport) {
     modeCount: document.getElementById('modeSelect').options.length,
     drawerHidden: document.getElementById('navDrawer').getAttribute('aria-hidden'),
     activeNav: document.querySelector('.nav-link.is-active')?.getAttribute('href'),
+    frequencyReadouts: document.querySelectorAll('.frequency-readout').length,
+    settings: {
+      expanded: document.getElementById('txSettingsToggle')?.getAttribute('aria-expanded'),
+      hidden: document.getElementById('txSettingsPanel')?.getAttribute('aria-hidden'),
+      inert: document.getElementById('txSettingsPanel')?.hasAttribute('inert'),
+      ownsMode: document.getElementById('txSettingsPanel')?.contains(document.getElementById('modeSelect')),
+      topbarMode: document.querySelectorAll('.topbar-actions #modeSelect').length,
+    },
     overflow: document.documentElement.scrollWidth - window.innerWidth,
     clippedButtons: [...document.querySelectorAll('button')]
       .filter(button => button.scrollWidth > button.clientWidth + 1)
@@ -322,10 +510,33 @@ async function verifyViewport(name, viewport) {
   if (encoderShell.drawerHidden !== 'true' || !encoderShell.activeNav?.endsWith('encode.html')) {
     throw new Error(`${name}: encoder navigation state is invalid`);
   }
+  if (encoderShell.frequencyReadouts !== 0 || encoderShell.settings.expanded !== 'false' ||
+      encoderShell.settings.hidden !== 'true' || !encoderShell.settings.inert ||
+      !encoderShell.settings.ownsMode || encoderShell.settings.topbarMode !== 0) {
+    throw new Error(`${name}: encoder settings do not start collapsed or still expose the old header mode`);
+  }
   if (encoderShell.overflow > 1 || encoderShell.clippedButtons.length) {
     throw new Error(`${name}: encoder layout overflow/clipping ${encoderShell.overflow}px ${encoderShell.clippedButtons.join(',')}`);
   }
   if (encoderShell.canvas.width <= 0 || encoderShell.canvas.height <= 0) throw new Error(`${name}: encoder source canvas has no layout`);
+
+  await page.click('#txSettingsToggle');
+  await page.waitForFunction(() => document.getElementById('txSettingsPanel').getAttribute('aria-hidden') === 'false');
+  await page.click('#txSettingsPanel .custom-select-trigger');
+  const txMenuBox = await page.locator('#txSettingsPanel .custom-select-menu').boundingBox();
+  if (!txMenuBox || txMenuBox.x < 0 || txMenuBox.y < 0 ||
+      txMenuBox.x + txMenuBox.width > viewport.width || txMenuBox.y + txMenuBox.height > viewport.height) {
+    throw new Error(`${name}: encoder mode menu is clipped ${JSON.stringify(txMenuBox)}`);
+  }
+  await page.click('#txSettingsPanel .custom-select-option[data-value="8"]');
+  if (await page.inputValue('#modeSelect') !== '8') throw new Error(`${name}: encoder floating mode setting did not update TX mode`);
+  await page.screenshot({ path: `test-artifacts/${name}-encode-settings.png`, fullPage: false });
+  await page.click('#txSettingsClose');
+  if (await page.getAttribute('#txSettingsPanel', 'aria-hidden') !== 'true') throw new Error(`${name}: encoder settings close button failed`);
+  await page.click('#txSettingsToggle');
+  await page.keyboard.press('Escape');
+  if (await page.getAttribute('#txSettingsPanel', 'aria-hidden') !== 'true') throw new Error(`${name}: encoder settings Escape close failed`);
+
   await page.click('#navToggle');
   if (await page.getAttribute('#navDrawer', 'aria-hidden') !== 'false') throw new Error(`${name}: encoder navigation did not open`);
   await clickVisibleScrim(page);
