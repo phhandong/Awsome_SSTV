@@ -125,12 +125,32 @@ const settingsScrimCloses = settingsToggle.getAttribute('aria-expanded') === 'fa
   settingsPanel.getAttribute('aria-hidden') === 'true';
 const decodeButtons = [...document.querySelectorAll('.decode-actions button')].map(button => button.id);
 const decoderOnly = !document.getElementById('encodeBtn') &&
-  decodeButtons.join('|') === 'realtimeDecodeBtn|decodeUploadedBtn';
-const fastDecodeLabel = document.getElementById('decodeUploadedBtn').textContent === '⚡️极速解码';
+  decodeButtons.join('|') === 'micReceiveBtn|offlineDecodeBtn' &&
+  !!document.getElementById('fastDecodeMode') &&
+  !document.getElementById('realtimeDecodeBtn') && !document.getElementById('decodeUploadedBtn') &&
+  !document.getElementById('micStartBtn') && !document.getElementById('micStopBtn');
+const receiveButton = document.getElementById('micReceiveBtn');
+const receiveButtonStartsReady = receiveButton.textContent.trim() === '开始接收' &&
+  receiveButton.getAttribute('aria-pressed') === 'false' && receiveButton.disabled;
+const offlineDecodeButton = document.getElementById('offlineDecodeBtn');
+const fastDecodeMode = document.getElementById('fastDecodeMode');
+const offlineDecodeStartsStandard = document.getElementById('offlineDecodeLabel').textContent === '离线解码' &&
+  offlineDecodeButton.classList.contains('accent') && !offlineDecodeButton.classList.contains('primary');
+fastDecodeMode.checked = true;
+fastDecodeMode.dispatchEvent(new window.Event('change', { bubbles: true }));
+const fastDecodeToggleWorks = document.getElementById('offlineDecodeLabel').textContent === '极速解码' &&
+  offlineDecodeButton.classList.contains('primary') && !offlineDecodeButton.classList.contains('accent');
+fastDecodeMode.checked = false;
+fastDecodeMode.dispatchEvent(new window.Event('change', { bubbles: true }));
 const audioPlayerWrapper = document.getElementById('audioPlayerWrapper');
 const permanentPlayerStartsIdle = !audioPlayerWrapper.hidden &&
   audioPlayerWrapper.classList.contains('is-idle') &&
   document.getElementById('audioPlayPauseBtn').disabled;
+const resultFooterStartsPersistent = !document.getElementById('resultFrameInfo').hidden &&
+  !document.getElementById('resultPagination').hidden &&
+  document.getElementById('decodedPageCount').textContent === '00 / 00' &&
+  document.getElementById('previousDecodedFrame').disabled &&
+  document.getElementById('nextDecodedFrame').disabled;
 const navButton = document.getElementById('navToggle');
 const navDrawer = document.getElementById('navDrawer');
 const navDefaultHidden = navButton.getAttribute('aria-expanded') === 'false' &&
@@ -223,8 +243,11 @@ const paginationShowsPartialSecond = document.getElementById('decodedPageCount')
 app.setDecodedFrames([{ ...firstBatchResult, startSec: 3661.2, endSec: 3723.4 }]);
 const hourRangeFormatting = document.getElementById('resultAudioRange').textContent === '1:01:01.2 - 1:02:03.4';
 app.setDecodedFrames([firstBatchResult]);
-const singleFrameHidesPagination = document.getElementById('resultPagination').hidden &&
+const singleFrameKeepsPagination = !document.getElementById('resultPagination').hidden &&
   !document.getElementById('resultFrameInfo').hidden &&
+  document.getElementById('decodedPageCount').textContent === '01 / 01' &&
+  document.getElementById('previousDecodedFrame').disabled &&
+  document.getElementById('nextDecodedFrame').disabled &&
   document.getElementById('resultAudioRange').textContent === '00:12.3 - 00:31.8';
 app.resetDecodedResult();
 const decodedResultResets = document.getElementById('resultCanvas').width === 320 &&
@@ -233,11 +256,13 @@ const decodedResultResets = document.getElementById('resultCanvas').width === 32
   document.getElementById('receiverAfc').textContent === '--' &&
   document.getElementById('resetDecodedBtn').disabled &&
   document.getElementById('saveImageBtn').disabled &&
+  document.getElementById('decodedPageCount').textContent === '00 / 00' &&
+  document.getElementById('resultAudioRange').textContent === '--:--.- - --:--.-' &&
   document.getElementById('decoderOutput').classList.contains('is-empty');
 const encoderDom = new JSDOM(encoderHtml).window.document;
 const encoderIsSeparate = encoderDom.body.dataset.page === 'encoder' &&
   !!encoderDom.getElementById('encodeBtn') && !!encoderDom.getElementById('modeSelect') &&
-  !encoderDom.getElementById('wavDropzone') && !encoderDom.getElementById('realtimeDecodeBtn');
+  !encoderDom.getElementById('wavDropzone') && !encoderDom.getElementById('offlineDecodeBtn');
 const encoderSettingsPanel = encoderDom.getElementById('txSettingsPanel');
 const encoderSettingsCollapsed = encoderDom.getElementById('txSettingsToggle')?.getAttribute('aria-expanded') === 'false' &&
   encoderSettingsPanel?.getAttribute('aria-hidden') === 'true' && encoderSettingsPanel?.hasAttribute('inert') &&
@@ -273,9 +298,11 @@ const checks = {
   'unsafe saved baseband migrates to defaults': unsafeFilterMigrated,
   'baseband sliders preserve protocol frequencies': protocolRangeConstrained && filterSaved && unsafeDomRangeRejected,
   'baseband reset feeds phase DSP options': filterReset,
-  'decoder page exposes exactly two decode commands': decoderOnly,
-  'fast decode command uses requested label': fastDecodeLabel,
+  'decoder page exposes two commands and one mode toggle': decoderOnly,
+  'receiver uses one start-stop command': receiveButtonStartsReady,
+  'offline decode toggles into fast mode': offlineDecodeStartsStandard && fastDecodeToggleWorks,
   'audio player remains visible in its idle state': permanentPlayerStartsIdle,
+  'result footer and pagination remain visible when empty': resultFooterStartsPersistent,
   'navigation starts hidden and toggles safely': navDefaultHidden && navOpens && navCloses,
   '12-cell SNR meter reports dB and resets': meterResponds && meterResets,
   'offline decoder progress remains visible and reports ARIA state': offlineProgressStartsIdle &&
@@ -283,7 +310,7 @@ const checks = {
   'decoded image can be manually reset': decodedResultEnablesReset && decodedResultResets,
   'multi-frame results paginate with absolute time and partial state': paginationStartsAtFirst && paginationShowsPartialSecond,
   'decoded audio ranges switch to hour formatting': hourRangeFormatting,
-  'single decoded frame keeps time and hides pagination': singleFrameHidesPagination,
+  'single decoded frame keeps persistent pagination': singleFrameKeepsPagination,
   'decoded image metadata is removed from P2': decodedMetadataRemoved,
   'ROWS telemetry is removed from P1': rowsTelemetryRemoved,
   'encoder has a separate page shell': encoderIsSeparate,

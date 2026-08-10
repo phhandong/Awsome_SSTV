@@ -47,14 +47,18 @@ async function verifyViewport(name, viewport) {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('#micStartBtn');
+  await page.waitForSelector('#micReceiveBtn');
 
   const decoderShell = await page.evaluate(() => ({
     page: document.body.dataset.page,
     drawerHidden: document.getElementById('navDrawer').getAttribute('aria-hidden'),
     navExpanded: document.getElementById('navToggle').getAttribute('aria-expanded'),
     decodeButtons: [...document.querySelectorAll('.decode-actions button')].map(button => button.id),
-    fastDecodeLabel: document.getElementById('decodeUploadedBtn')?.textContent,
+    decodeMode: {
+      label: document.getElementById('offlineDecodeLabel')?.textContent,
+      fastChecked: document.getElementById('fastDecodeMode')?.checked,
+      oldButtons: document.querySelectorAll('#realtimeDecodeBtn, #decodeUploadedBtn').length,
+    },
     persistentControls: {
       progressVisible: !document.getElementById('offlineDecodeProgress')?.hidden,
       progressIdle: document.getElementById('offlineDecodeProgress')?.classList.contains('is-idle'),
@@ -64,6 +68,11 @@ async function verifyViewport(name, viewport) {
       playerVisible: !document.getElementById('audioPlayerWrapper')?.hidden,
       playerIdle: document.getElementById('audioPlayerWrapper')?.classList.contains('is-idle'),
       playDisabled: document.getElementById('audioPlayPauseBtn')?.disabled,
+      resultFooterVisible: !document.getElementById('resultFrameInfo')?.hidden,
+      paginationVisible: !document.getElementById('resultPagination')?.hidden,
+      pageCount: document.getElementById('decodedPageCount')?.textContent,
+      toolsInFooter: document.getElementById('resultFrameInfo')?.contains(document.querySelector('.image-export-tools')),
+      oldHeading: document.querySelectorAll('.result-heading').length,
     },
     hasEncoder: !!document.getElementById('encodeBtn'),
     meterCells: document.querySelectorAll('#receiverMeter .signal-cell').length,
@@ -93,6 +102,9 @@ async function verifyViewport(name, viewport) {
         controls: box(controls),
         output: box(output),
         canvas: box(canvas),
+        dropzone: box(document.getElementById('wavDropzone')),
+        meter: box(document.querySelector('.signal-meter-wrap')),
+        telemetry: box(document.querySelector('.receiver-telemetry')),
       };
     })(),
     settings: {
@@ -110,21 +122,24 @@ async function verifyViewport(name, viewport) {
       body: parseFloat(getComputedStyle(document.body).fontSize),
       intro: parseFloat(getComputedStyle(document.querySelector('.console-intro > div:first-child > p:last-child')).fontSize),
       command: parseFloat(getComputedStyle(document.querySelector('.command-btn')).fontSize),
-      micro: parseFloat(getComputedStyle(document.querySelector('.module-label span')).fontSize),
+      micro: parseFloat(getComputedStyle(document.getElementById('receiverStatus')).fontSize),
       panelTitle: parseFloat(getComputedStyle(document.querySelector('.panel-heading h2')).fontSize),
     },
   }));
   if (decoderShell.page !== 'decoder' || decoderShell.drawerHidden !== 'true' || decoderShell.navExpanded !== 'false') {
     throw new Error(`${name}: decoder shell or hidden navigation is invalid`);
   }
-  if (decoderShell.decodeButtons.join('|') !== 'realtimeDecodeBtn|decodeUploadedBtn' || decoderShell.hasEncoder) {
-    throw new Error(`${name}: decoder does not expose exactly the two requested commands`);
+  if (decoderShell.decodeButtons.join('|') !== 'micReceiveBtn|offlineDecodeBtn' ||
+      decoderShell.decodeMode.oldButtons !== 0 || decoderShell.hasEncoder) {
+    throw new Error(`${name}: decoder does not expose the consolidated offline command`);
   }
-  if (decoderShell.fastDecodeLabel !== '⚡️极速解码' ||
+  if (decoderShell.decodeMode.label !== '离线解码' || decoderShell.decodeMode.fastChecked ||
       !decoderShell.persistentControls.progressVisible || !decoderShell.persistentControls.progressIdle ||
       !decoderShell.persistentControls.progressMerged || decoderShell.persistentControls.progressValue !== '0' ||
       !decoderShell.persistentControls.playerVisible || !decoderShell.persistentControls.playerIdle ||
-      !decoderShell.persistentControls.playDisabled) {
+      !decoderShell.persistentControls.playDisabled || !decoderShell.persistentControls.resultFooterVisible ||
+      !decoderShell.persistentControls.paginationVisible || decoderShell.persistentControls.pageCount !== '00 / 00' ||
+      !decoderShell.persistentControls.toolsInFooter || decoderShell.persistentControls.oldHeading !== 0) {
     throw new Error(`${name}: permanent progress/player state or fast decode label is invalid ${JSON.stringify(decoderShell.persistentControls)}`);
   }
   if (decoderShell.meterCells !== 12 || decoderShell.footer.childCount !== 1 ||
@@ -143,6 +158,28 @@ async function verifyViewport(name, viewport) {
     : output.top >= controls.bottom - 1 && Math.abs(controls.left - output.left) <= 2 && Math.abs(controls.right - output.right) <= 2;
   if (!workspaceLayoutOk) {
     throw new Error(`${name}: decoder workspace is not ${wideWorkspace ? 'side-by-side in the first viewport' : 'vertically stacked'} ${JSON.stringify(decoderShell.workspace)}`);
+  }
+  const emptyCanvasBorder = await page.evaluate(() => getComputedStyle(document.getElementById('resultCanvas')).borderBottomColor);
+  await page.hover('.result-canvas-stage');
+  const emptyCanvasHover = await page.evaluate(() => {
+    const style = getComputedStyle(document.getElementById('resultCanvas'));
+    const stage = getComputedStyle(document.querySelector('.result-canvas-stage'));
+    return {
+      border: style.borderBottomColor,
+      shadow: style.boxShadow,
+      canvasOpacity: style.opacity,
+      stageColor: stage.backgroundColor,
+      stagePattern: stage.backgroundImage,
+    };
+  });
+  if (emptyCanvasHover.border !== emptyCanvasBorder || emptyCanvasHover.shadow !== 'none' ||
+      emptyCanvasHover.canvasOpacity !== '0' || emptyCanvasHover.stageColor === 'rgb(0, 0, 0)' ||
+      emptyCanvasHover.stagePattern === 'none') {
+    throw new Error(`${name}: empty result canvas still gains a hover border or shadow ${JSON.stringify(emptyCanvasHover)}`);
+  }
+  if (wideWorkspace && (Math.abs(decoderShell.workspace.dropzone.top - decoderShell.workspace.meter.top) > 1 ||
+      Math.abs(decoderShell.workspace.dropzone.bottom - decoderShell.workspace.telemetry.bottom) > 2)) {
+    throw new Error(`${name}: P1 upload and receiver contents are not vertically aligned ${JSON.stringify(decoderShell.workspace)}`);
   }
   if (decoderShell.settings.expanded !== 'false' || decoderShell.settings.hidden !== 'true' ||
       !decoderShell.settings.inert || !decoderShell.settings.ownsControls || decoderShell.settings.topbarSettings !== 0 ||
@@ -376,9 +413,62 @@ async function verifyViewport(name, viewport) {
       return pagination.left < settings.right && pagination.right > settings.left &&
         pagination.top < settings.bottom && pagination.bottom > settings.top;
     })(),
+    p2Alignment: (() => {
+      const controls = document.getElementById('decoderControls').getBoundingClientRect();
+      const meter = document.querySelector('.signal-meter-wrap').getBoundingClientRect();
+      const stage = document.querySelector('.result-canvas-stage').getBoundingClientRect();
+      const info = document.getElementById('resultFrameInfo').getBoundingClientRect();
+      return { top: Math.abs(meter.top - stage.top), bottom: Math.abs(controls.bottom - info.bottom) };
+    })(),
+    resultImageLayout: (() => {
+      const stageElement = document.querySelector('.result-canvas-stage');
+      const canvasElement = document.getElementById('resultCanvas');
+      const stage = stageElement.getBoundingClientRect();
+      const canvas = canvasElement.getBoundingClientRect();
+      const stageStyle = getComputedStyle(stageElement);
+      const canvasStyle = getComputedStyle(canvasElement);
+      const availableWidth = stageElement.clientWidth;
+      const availableHeight = stageElement.clientHeight;
+      const imageScale = Math.min(availableWidth / canvasElement.width, availableHeight / canvasElement.height);
+      const fittedWidth = canvasElement.width * imageScale;
+      const fittedHeight = canvasElement.height * imageScale;
+      return {
+        centerX: Math.abs((canvas.left + canvas.right) / 2 - (stage.left + stage.right) / 2),
+        centerY: Math.abs((canvas.top + canvas.bottom) / 2 - (stage.top + stage.bottom) / 2),
+        contained: canvas.width <= stage.width + 1 && canvas.height <= stage.height + 1,
+        imageScale,
+        fillsAvailableAxis: fittedWidth >= availableWidth - 1 || fittedHeight >= availableHeight - 1,
+        objectFit: canvasStyle.objectFit,
+        objectPosition: canvasStyle.objectPosition,
+        canvasBackground: canvasStyle.backgroundColor,
+        stageColor: stageStyle.backgroundColor,
+        stagePattern: stageStyle.backgroundImage,
+      };
+    })(),
+    footerLayout: (() => {
+      const footer = document.getElementById('resultFrameInfo').getBoundingClientRect();
+      const pagination = document.getElementById('resultPagination').getBoundingClientRect();
+      const tools = document.querySelector('.image-export-tools').getBoundingClientRect();
+      const settings = document.getElementById('rxSettingsToggle').getBoundingClientRect();
+      return {
+        paginationCenter: Math.abs((pagination.left + pagination.right) / 2 - (footer.left + footer.right) / 2),
+        toolsOnRight: tools.left > pagination.right && tools.right <= footer.right + 1,
+        toolsOverlapSettings: tools.left < settings.right && tools.right > settings.left &&
+          tools.top < settings.bottom && tools.bottom > settings.top,
+      };
+    })(),
   }));
   if (secondPage.page !== '02 / 02' || secondPage.previousDisabled || !secondPage.nextDisabled ||
-      !secondPage.canvasLabel.includes('第 2 张') || secondPage.overflow > 1 || secondPage.controlsOverlapSettings) {
+      !secondPage.canvasLabel.includes('第 2 张') || secondPage.overflow > 1 || secondPage.controlsOverlapSettings ||
+      secondPage.resultImageLayout.centerX > 1 || secondPage.resultImageLayout.centerY > 1 ||
+      !secondPage.resultImageLayout.contained || secondPage.resultImageLayout.stageColor === 'rgb(0, 0, 0)' ||
+      secondPage.resultImageLayout.stagePattern === 'none' || secondPage.resultImageLayout.imageScale <= 1 ||
+      !secondPage.resultImageLayout.fillsAvailableAxis || secondPage.resultImageLayout.objectFit !== 'contain' ||
+      secondPage.resultImageLayout.objectPosition !== '50% 50%' ||
+      secondPage.resultImageLayout.canvasBackground !== 'rgba(0, 0, 0, 0)' ||
+      (wideWorkspace && (secondPage.p2Alignment.top > 1 || secondPage.p2Alignment.bottom > 1 ||
+        secondPage.footerLayout.paginationCenter > 1 || !secondPage.footerLayout.toolsOnRight ||
+        secondPage.footerLayout.toolsOverlapSettings))) {
     throw new Error(`${name}: second decoded page failed ${JSON.stringify(secondPage)}`);
   }
   await page.screenshot({ path: `test-artifacts/${name}-pagination.png`, fullPage: false });
@@ -425,7 +515,7 @@ async function verifyViewport(name, viewport) {
     }
     await page.fill('#decodeStartSec', String(duration));
     const invalid = await page.evaluate(() => ({
-      disabled: document.getElementById('decodeUploadedBtn').disabled,
+      disabled: document.getElementById('offlineDecodeBtn').disabled,
       errorVisible: !document.getElementById('rangeError').hidden,
       aria: document.getElementById('decodeStartSec').getAttribute('aria-invalid'),
     }));
@@ -494,10 +584,12 @@ async function verifyViewport(name, viewport) {
       { timeout: 30000 }
     );
     const pdStartedAt = Date.now();
-    await page.click('#decodeUploadedBtn');
+    await page.check('#fastDecodeMode');
+    await page.waitForFunction(() => document.getElementById('offlineDecodeLabel').textContent === '极速解码');
+    await page.click('#offlineDecodeBtn');
     await page.waitForFunction(() => {
       const panel = document.getElementById('offlineDecodeProgress');
-      const button = document.getElementById('decodeUploadedBtn');
+      const button = document.getElementById('offlineDecodeBtn');
       return !panel.hidden && button.getAttribute('aria-busy') === 'true';
     });
     const pdProgressStarted = await page.evaluate(() => {
@@ -517,7 +609,7 @@ async function verifyViewport(name, viewport) {
       throw new Error(`desktop: offline progress did not start ${JSON.stringify(pdProgressStarted)}`);
     }
     await page.waitForFunction(() => {
-      const button = document.getElementById('decodeUploadedBtn');
+      const button = document.getElementById('offlineDecodeBtn');
       return !button.classList.contains('loading') &&
         document.getElementById('receiverMode').textContent === 'PD120' &&
         document.getElementById('resultCanvas').width === 640 &&
@@ -536,7 +628,7 @@ async function verifyViewport(name, viewport) {
         sampleSum,
         progressComplete: document.getElementById('offlineDecodeProgress').classList.contains('is-complete'),
         progressValue: document.getElementById('offlineDecodeProgressBar').getAttribute('aria-valuenow'),
-        buttonBusy: document.getElementById('decodeUploadedBtn').hasAttribute('aria-busy'),
+        buttonBusy: document.getElementById('offlineDecodeBtn').hasAttribute('aria-busy'),
       };
     });
     if (pdDecoded.width !== 640 || pdDecoded.height !== 496 ||
@@ -564,10 +656,12 @@ async function verifyViewport(name, viewport) {
     console.log(`desktop: real PD120 offline decode ${pdElapsedMs}ms`);
   }
 
-  await page.click('#micStartBtn');
+  await page.click('#micReceiveBtn');
   await page.waitForFunction(() => ['搜索信号', '已锁定'].includes(document.getElementById('receiverStatus').textContent));
-  await page.click('#micStopBtn');
+  await page.waitForFunction(() => document.getElementById('micReceiveBtn').getAttribute('aria-pressed') === 'true');
+  await page.click('#micReceiveBtn');
   await page.waitForFunction(() => document.getElementById('receiverStatus').textContent === '已停止');
+  if (await page.getAttribute('#micReceiveBtn', 'aria-pressed') !== 'false') throw new Error(`${name}: receive command did not return to its start state`);
   if (await page.getAttribute('#receiverMeter', 'aria-valuenow') !== null) throw new Error(`${name}: SNR meter did not reset after stop`);
 
   const layout = await page.evaluate(() => ({
@@ -589,7 +683,7 @@ async function verifyViewport(name, viewport) {
   await page.waitForFunction(() => !document.getElementById('encodeBtn').disabled);
   const encoderShell = await page.evaluate(() => ({
     page: document.body.dataset.page,
-    hasDecoder: !!document.getElementById('wavDropzone') || !!document.getElementById('realtimeDecodeBtn'),
+    hasDecoder: !!document.getElementById('wavDropzone') || !!document.getElementById('offlineDecodeBtn'),
     modeCount: document.getElementById('modeSelect').options.length,
     drawerHidden: document.getElementById('navDrawer').getAttribute('aria-hidden'),
     activeNav: document.querySelector('.nav-link.is-active')?.getAttribute('href'),

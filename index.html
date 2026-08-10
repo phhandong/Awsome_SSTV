@@ -59,7 +59,7 @@
         <div id="decoderControls" class="decoder-controls">
       <div class="input-deck">
         <div class="console-module upload-module">
-          <div class="module-label"><span>FILE CHANNEL</span><b>离线音频</b></div>
+          <!-- <div class="module-label"><span>FILE CHANNEL</span><b>离线音频</b></div> -->
           <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
             <span class="upload-glyph" aria-hidden="true">⇧</span>
             <div class="dropzone-hint"><strong>载入音频</strong><small>WAV / MP3 · 拖放或点击</small></div>
@@ -68,13 +68,6 @@
         </div>
 
         <div class="console-module live-receiver" aria-label="实时信号接收">
-          <div class="live-toolbar">
-            <div class="live-title"><span class="live-indicator" id="liveIndicator" aria-hidden="true"></span><span>LIVE CHANNEL</span></div>
-            <div class="btn-row compact">
-              <button id="micStartBtn" class="btn mini" aria-label="开始麦克风接收">● 接收</button>
-              <button id="micStopBtn" class="btn mini ghost" aria-label="停止麦克风接收" disabled>■ 停止</button>
-            </div>
-          </div>
           <div id="offlineDecodeProgress" class="signal-meter-wrap receiver-meter-panel is-idle" title="12 段仪表显示音频信噪比，下方细轨显示解码进度">
             <div class="signal-meter-label"><span>EST. AUDIO SNR</span><output id="receiverLevelText">-- dB</output></div>
             <div id="receiverMeter" class="signal-meter" role="progressbar" aria-label="实时估算音频信噪比" aria-valuemin="-10" aria-valuemax="30" aria-valuetext="等待信号">
@@ -112,14 +105,16 @@
               <div class="audio-playhead" id="audioPlayhead"></div>
             </div>
           </div>
-          <div class="audio-time-display"><span id="audioCurrentTime">0:00</span><span class="audio-time-separator">/</span><span id="audioDuration">0:00</span></div>
-        </div>
-        <div class="audio-selection-info">
-          <span class="range-inputs">
-            <label>起点 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
-            <label>终点 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
-          </span>
-          <button id="resetSelectionBtn" class="btn-link">重置区间</button>
+          <div class="audio-range-panel">
+            <div class="audio-time-display"><span id="audioCurrentTime">0:00</span><span class="audio-time-separator">/</span><span id="audioDuration">0:00</span></div>
+            <div class="audio-selection-info">
+              <span class="range-inputs">
+                <label>起点 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+                <label>终点 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+              </span>
+              <button id="resetSelectionBtn" class="btn-link">重置区间</button>
+            </div>
+          </div>
         </div>
         <p id="rangeError" class="range-error" role="alert" hidden>范围必须满足 0 ≤ 起点 &lt; 终点 ≤ 音频总时长。</p>
       </div>
@@ -128,36 +123,38 @@
         <div class="decode-options"><span class="opt-hint" id="audioMeta" role="status" aria-live="polite">NO FILE LOADED</span></div>
       </div>
 
-      <div class="btn-row decode-actions two-actions">
-        <button id="realtimeDecodeBtn" class="btn accent command-btn" disabled aria-label="边播放边实时解码上传的音频"><span>◉</span> 实时解码</button>
-        <button id="decodeUploadedBtn" class="btn primary command-btn" disabled aria-label="极速解码上传的音频">⚡️极速解码</button>
+      <div class="btn-row decode-actions three-actions">
+        <button id="micReceiveBtn" class="btn command-btn receive-command" aria-label="开始接收" aria-pressed="false"><span id="liveIndicator" class="live-indicator" aria-hidden="true"></span><span id="micReceiveLabel">开始接收</span></button>
+        <button id="offlineDecodeBtn" class="btn accent command-btn" disabled aria-label="离线解码上传的音频"><span id="offlineDecodeIcon" aria-hidden="true">◉</span><span id="offlineDecodeLabel">离线解码</span></button>
+        <label class="fast-decode-toggle" for="fastDecodeMode">
+          <input id="fastDecodeMode" type="checkbox">
+          <span class="fast-decode-check" aria-hidden="true"></span>
+          <span>极速模式</span>
+        </label>
       </div>
         </div>
 
       <div id="decoderOutput" class="result-wrap console-screen is-empty">
-        <div class="result-heading">
-          <div class="label"><span>IMAGE BUFFER</span> 解码结果</div>
+        <div class="result-canvas-stage">
+          <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
+          <span class="result-empty-state" aria-hidden="true">NO DECODED FRAME</span>
+        </div>
+        <div id="resultFrameInfo" class="result-frame-info">
+          <div class="result-audio-range">
+            <span aria-hidden="true">AUDIO</span>
+            <output id="resultAudioRange">--:--.- - --:--.-</output>
+            <strong id="resultIncomplete" class="result-incomplete" hidden>不完整 0%</strong>
+          </div>
+          <nav id="resultPagination" class="result-pagination" aria-label="解码图片翻页">
+            <button id="previousDecodedFrame" type="button" aria-label="上一张解码图片" title="上一张" disabled>‹</button>
+            <output id="decodedPageCount" aria-live="polite" aria-atomic="true">00 / 00</output>
+            <button id="nextDecodedFrame" type="button" aria-label="下一张解码图片" title="下一张" disabled>›</button>
+          </nav>
           <div class="image-export-tools">
             <button id="resetDecodedBtn" class="image-reset-btn" type="button" disabled title="重置解码画面" aria-label="重置解码画面"><span aria-hidden="true">↺</span></button>
             <label class="format-select-wrap" title="图片保存格式"><select id="imageFormat" aria-label="图片保存格式"><option value="png">PNG</option><option value="bmp">BMP</option></select></label>
             <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片"><span class="image-save-icon" aria-hidden="true">⇩</span></button>
           </div>
-        </div>
-        <div class="result-canvas-stage">
-          <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
-          <span class="result-empty-state" aria-hidden="true">NO DECODED FRAME</span>
-        </div>
-        <div id="resultFrameInfo" class="result-frame-info" hidden>
-          <div class="result-audio-range">
-            <span aria-hidden="true">AUDIO</span>
-            <output id="resultAudioRange">00:00.0 - 00:00.0</output>
-            <strong id="resultIncomplete" class="result-incomplete" hidden>不完整 0%</strong>
-          </div>
-          <nav id="resultPagination" class="result-pagination" aria-label="解码图片翻页" hidden>
-            <button id="previousDecodedFrame" type="button" aria-label="上一张解码图片" title="上一张">‹</button>
-            <output id="decodedPageCount" aria-live="polite" aria-atomic="true">01 / 01</output>
-            <button id="nextDecodedFrame" type="button" aria-label="下一张解码图片" title="下一张">›</button>
-          </nav>
         </div>
       </div>
       </div>

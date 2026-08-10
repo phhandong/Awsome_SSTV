@@ -87,11 +87,8 @@ function init() {
   audioPlayer.addEventListener('emptied', updatePlayButton);
   document.getElementById('downloadBtn')?.addEventListener('click', onDownload);
   document.getElementById('selfTestBtn')?.addEventListener('click', onSelfTest);
-  document.getElementById('decodeUploadedBtn')?.addEventListener('click', () => {
-    if (!state.uploadedAudio) return;
-    onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
-  });
-  document.getElementById('realtimeDecodeBtn')?.addEventListener('click', toggleRealtimeDecode);
+  document.getElementById('offlineDecodeBtn')?.addEventListener('click', runOfflineDecode);
+  document.getElementById('fastDecodeMode')?.addEventListener('change', updateOfflineDecodeMode);
   document.getElementById('saveImageBtn')?.addEventListener('click', saveDecodedImage);
   document.getElementById('resetDecodedBtn')?.addEventListener('click', () => resetDecodedResult({ announce: true }));
   document.getElementById('previousDecodedFrame')?.addEventListener('click', () => {
@@ -111,8 +108,7 @@ function init() {
   for (const id of ['decodeStartSec', 'decodeEndSec']) {
     document.getElementById(id)?.addEventListener('input', onRangeInput);
   }
-  document.getElementById('micStartBtn')?.addEventListener('click', startMicrophoneReceiver);
-  document.getElementById('micStopBtn')?.addEventListener('click', stopMicrophoneReceiver);
+  document.getElementById('micReceiveBtn')?.addEventListener('click', toggleMicrophoneReceiver);
   const basebandController = document.getElementById('basebandFilterBtn')
     ? setupBasebandFilter()
     : null;
@@ -122,7 +118,7 @@ function init() {
     state.webDecoder = new WebSSTVDecoder();
     bindReceiverEvents(state.webDecoder);
   } else if (audioDropzone) {
-    document.getElementById('micStartBtn').disabled = true;
+    document.getElementById('micReceiveBtn').disabled = true;
     setReceiverStatus('当前浏览器不支持 Worker');
   }
 
@@ -196,7 +192,7 @@ function setupKeyboardShortcuts() {
     }
     // Ctrl/Cmd + D: 解码上传的音频
     if ((e.ctrlKey || e.metaKey) && e.key === 'd') {
-      const decodeBtn = document.getElementById('decodeUploadedBtn');
+      const decodeBtn = document.getElementById('offlineDecodeBtn');
       if (decodeBtn && !decodeBtn.disabled) {
         e.preventDefault();
         decodeBtn.click();
@@ -561,9 +557,10 @@ async function onDecode(pcm, sr) {
   state.isProcessing = true;
   state.offlineDecodeActive = true;
   const decodeGeneration = state.decodeGeneration;
-  const decodeUploadedBtn = document.getElementById('decodeUploadedBtn');
-  decodeUploadedBtn.classList.add('loading');
-  decodeUploadedBtn.setAttribute('aria-busy', 'true');
+  const offlineDecodeBtn = document.getElementById('offlineDecodeBtn');
+  offlineDecodeBtn.classList.add('loading');
+  offlineDecodeBtn.setAttribute('aria-busy', 'true');
+  document.getElementById('fastDecodeMode').disabled = true;
   setOfflineDecodeProgress(null, '正在分析 VIS / 同步');
   await waitForBrowserPaint();
 
@@ -629,8 +626,10 @@ async function onDecode(pcm, sr) {
   } finally {
     state.isProcessing = false;
     state.offlineDecodeActive = false;
-    decodeUploadedBtn.classList.remove('loading');
-    decodeUploadedBtn.removeAttribute('aria-busy');
+    offlineDecodeBtn.classList.remove('loading');
+    offlineDecodeBtn.removeAttribute('aria-busy');
+    document.getElementById('fastDecodeMode').disabled = false;
+    updateOfflineDecodeMode();
     if (decodeGeneration === state.decodeGeneration) {
       hideOfflineDecodeProgress(document.getElementById('offlineDecodeProgress')?.classList.contains('is-error') ? 1400 : 900);
     }
@@ -638,10 +637,34 @@ async function onDecode(pcm, sr) {
 }
 
 function setRealtimeButton(active) {
-  const button = document.getElementById('realtimeDecodeBtn');
-  button.textContent = active ? '■ 停止实时解码' : '◉ 实时解码';
-  button.setAttribute('aria-label', active ? '停止实时解码' : '边播放边实时解码上传的音频');
+  const button = document.getElementById('offlineDecodeBtn');
+  document.getElementById('offlineDecodeIcon').textContent = active ? '■' : '◉';
+  document.getElementById('offlineDecodeLabel').textContent = active ? '停止解码' : '离线解码';
+  button.setAttribute('aria-label', active ? '停止离线解码' : '离线解码上传的音频');
   button.classList.toggle('realtime-active', active);
+  document.getElementById('fastDecodeMode').disabled = active;
+}
+
+function runOfflineDecode() {
+  if (document.getElementById('fastDecodeMode').checked) {
+    if (!state.uploadedAudio) return;
+    return onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
+  }
+  return toggleRealtimeDecode();
+}
+
+function updateOfflineDecodeMode() {
+  if (state.realtimeDecode || state.isProcessing) return;
+  const fast = document.getElementById('fastDecodeMode').checked;
+  const button = document.getElementById('offlineDecodeBtn');
+  const rangeInvalid = ['decodeStartSec', 'decodeEndSec']
+    .some(id => document.getElementById(id).getAttribute('aria-invalid') === 'true');
+  document.getElementById('offlineDecodeIcon').textContent = fast ? '⚡' : '◉';
+  document.getElementById('offlineDecodeLabel').textContent = fast ? '极速解码' : '离线解码';
+  button.setAttribute('aria-label', fast ? '极速解码上传的音频' : '离线解码上传的音频');
+  button.classList.toggle('primary', fast);
+  button.classList.toggle('accent', !fast);
+  button.disabled = !state.uploadedAudio || rangeInvalid || (!fast && !state.webDecoder);
 }
 
 async function toggleRealtimeDecode() {
@@ -815,8 +838,6 @@ export function showDecodedFrame(index) {
     : (result.dsp?.afc ? '未锁定' : '关闭');
 
   const hasAudioRange = Number.isFinite(frame.startSec) && Number.isFinite(frame.endSec);
-  const frameInfo = document.getElementById('resultFrameInfo');
-  frameInfo.hidden = !hasAudioRange;
   if (hasAudioRange) {
     const rangeText = `${formatAudioTime(frame.startSec)} - ${formatAudioTime(frame.endSec)}`;
     document.getElementById('resultAudioRange').textContent = rangeText;
@@ -828,12 +849,11 @@ export function showDecodedFrame(index) {
       `第 ${nextIndex + 1} 张解码图像，音频 ${formatAudioTime(frame.startSec)} 至 ${formatAudioTime(frame.endSec)}`
     );
   } else {
+    document.getElementById('resultAudioRange').textContent = '--:--.- - --:--.-';
+    document.getElementById('resultIncomplete').hidden = true;
     canvas.setAttribute('aria-label', '解码结果图像');
   }
 
-  const pagination = document.getElementById('resultPagination');
-  const hasMultipleFrames = state.decodedFrames.length > 1;
-  pagination.hidden = !hasMultipleFrames;
   document.getElementById('decodedPageCount').textContent =
     `${String(nextIndex + 1).padStart(2, '0')} / ${String(state.decodedFrames.length).padStart(2, '0')}`;
   document.getElementById('previousDecodedFrame').disabled = nextIndex === 0;
@@ -862,10 +882,16 @@ export function resetDecodedResult({ announce = false, resetProgress = true } = 
   }
 
   document.getElementById('decoderOutput')?.classList.add('is-empty');
-  const frameInfo = document.getElementById('resultFrameInfo');
-  const pagination = document.getElementById('resultPagination');
-  if (frameInfo) frameInfo.hidden = true;
-  if (pagination) pagination.hidden = true;
+  const audioRange = document.getElementById('resultAudioRange');
+  const incomplete = document.getElementById('resultIncomplete');
+  const pageCount = document.getElementById('decodedPageCount');
+  const previous = document.getElementById('previousDecodedFrame');
+  const next = document.getElementById('nextDecodedFrame');
+  if (audioRange) audioRange.textContent = '--:--.- - --:--.-';
+  if (incomplete) incomplete.hidden = true;
+  if (pageCount) pageCount.textContent = '00 / 00';
+  if (previous) previous.disabled = true;
+  if (next) next.disabled = true;
   const canvasLabel = document.getElementById('resultCanvas');
   canvasLabel?.setAttribute('aria-label', '解码结果图像');
   const saveButton = document.getElementById('saveImageBtn');
@@ -882,14 +908,28 @@ export function resetDecodedResult({ announce = false, resetProgress = true } = 
 
 function setReceiverStatus(text, stateClass = '') {
   document.getElementById('receiverStatus').textContent = text;
-  document.getElementById('liveIndicator').className = `live-indicator ${stateClass}`.trim();
+  const indicator = document.getElementById('liveIndicator');
+  if (indicator) indicator.className = `live-indicator ${stateClass}`.trim();
+}
+
+function setMicrophoneButton(active, disabled = false) {
+  const button = document.getElementById('micReceiveBtn');
+  const label = document.getElementById('micReceiveLabel');
+  if (!button || !label) return;
+  button.disabled = disabled;
+  button.classList.toggle('is-receiving', active);
+  button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  button.setAttribute('aria-label', active ? '停止接收' : '开始接收');
+  label.textContent = active ? '停止接收' : '开始接收';
+}
+
+function toggleMicrophoneReceiver() {
+  return state.micActive ? stopMicrophoneReceiver() : startMicrophoneReceiver();
 }
 
 async function startMicrophoneReceiver() {
   if (!state.webDecoder || state.micActive) return;
-  const start = document.getElementById('micStartBtn');
-  const stop = document.getElementById('micStopBtn');
-  start.disabled = true;
+  setMicrophoneButton(false, true);
   updateSnrMeter();
   setReceiverStatus('请求权限', 'active');
   try {
@@ -898,11 +938,11 @@ async function startMicrophoneReceiver() {
       dsp: { ...readDspOptions(), engine: 'mmsstv' },
     });
     state.micActive = true;
-    stop.disabled = false;
+    setMicrophoneButton(true);
     setReceiverStatus('搜索信号', 'active');
     ui.toast('麦克风接收已开始', 'success');
   } catch (error) {
-    start.disabled = false;
+    setMicrophoneButton(false);
     setReceiverStatus('无法启动');
     ui.toast('麦克风启动失败: ' + error.message, 'error');
   }
@@ -910,10 +950,10 @@ async function startMicrophoneReceiver() {
 
 async function stopMicrophoneReceiver() {
   if (!state.webDecoder || !state.micActive) return;
+  setMicrophoneButton(true, true);
   state.micActive = false;
   await state.webDecoder.stopMicrophone(true);
-  document.getElementById('micStartBtn').disabled = false;
-  document.getElementById('micStopBtn').disabled = true;
+  setMicrophoneButton(false);
   updateSnrMeter();
   setReceiverStatus('已停止');
 }
@@ -1207,7 +1247,8 @@ function setRangeValidity(valid) {
     document.getElementById(id).setAttribute('aria-invalid', valid ? 'false' : 'true');
   }
   document.getElementById('rangeError').hidden = valid;
-  document.getElementById('decodeUploadedBtn').disabled = !valid || !state.uploadedAudio;
+  const fast = document.getElementById('fastDecodeMode').checked;
+  document.getElementById('offlineDecodeBtn').disabled = !valid || !state.uploadedAudio || (!fast && !state.webDecoder);
 }
 
 async function saveDecodedImage() {
@@ -1248,8 +1289,7 @@ async function onAudioFile(file) {
   resetDecodedResult();
   state.audioPlayer?.clear();
   state.uploadedAudio = null;
-  document.getElementById('decodeUploadedBtn').disabled = true;
-  document.getElementById('realtimeDecodeBtn').disabled = true;
+  document.getElementById('offlineDecodeBtn').disabled = true;
   for (const id of ['decodeStartSec', 'decodeEndSec']) document.getElementById(id).disabled = true;
   document.getElementById('audioMeta').textContent = 'LOADING AUDIO...';
   const spectrum = document.getElementById('spectrum');
@@ -1264,8 +1304,7 @@ async function onAudioFile(file) {
     await state.audioPlayer.loadAudio(samples, sampleRate);
     renderSpectrum(samples, sampleRate);
 
-    document.getElementById('decodeUploadedBtn').disabled = false;
-    document.getElementById('realtimeDecodeBtn').disabled = !state.webDecoder;
+    updateOfflineDecodeMode();
     const dur = (samples.length / sampleRate).toFixed(1);
     document.getElementById('decodeStartSec').disabled = false;
     document.getElementById('decodeEndSec').disabled = false;
