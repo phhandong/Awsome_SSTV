@@ -2,7 +2,7 @@
 
 import { listModes, getMode, DEFAULT_SAMPLE_RATE } from './modes.js';
 import { encode } from './encoder.js';
-import { decode } from './decoder.js';
+import { decode, decodeAll } from './decoder.js';
 import { encodeWAV, decodeWAV } from './wav.js';
 import { decodeAudioFile, sliceFromStart } from './audiodecode.js';
 import { magnitudeSpectrum, drawSpectrumColumn } from './fft.js';
@@ -27,7 +27,8 @@ const state = {
   realtimeDecode: null,
   offlineDecodeActive: false,
   offlineProgressHideTimer: null,
-  decodedResult: null,
+  decodedFrames: [],
+  activeDecodedFrameIndex: -1,
   decodeGeneration: 0,
 };
 
@@ -93,6 +94,12 @@ function init() {
   document.getElementById('realtimeDecodeBtn')?.addEventListener('click', toggleRealtimeDecode);
   document.getElementById('saveImageBtn')?.addEventListener('click', saveDecodedImage);
   document.getElementById('resetDecodedBtn')?.addEventListener('click', () => resetDecodedResult({ announce: true }));
+  document.getElementById('previousDecodedFrame')?.addEventListener('click', () => {
+    showDecodedFrame(state.activeDecodedFrameIndex - 1);
+  });
+  document.getElementById('nextDecodedFrame')?.addEventListener('click', () => {
+    showDecodedFrame(state.activeDecodedFrameIndex + 1);
+  });
   const imageFormat = document.getElementById('imageFormat');
   if (imageFormat) {
     try { imageFormat.value = localStorage.getItem('sstv.imageFormat') || 'png'; } catch (_) {}
@@ -565,13 +572,13 @@ async function onDecode(pcm, sr) {
   const startSec = state.audioSelection.start || 0;
   const endSec = state.audioSelection.end > 0 ? state.audioSelection.end : totalDuration;
   const duration = endSec - startSec;
+  const selectionStartSample = Math.floor(startSec * sr);
 
   try {
     let work = pcm;
     if (startSec > 0 || endSec < totalDuration) {
-      const startSample = Math.floor(startSec * sr);
       const endSample = Math.min(Math.floor(endSec * sr), pcm.length);
-      work = pcm.slice(startSample, endSample);
+      work = pcm.subarray(selectionStartSample, endSample);
       ui.toast(`解码选中区域 ${startSec.toFixed(1)}s ~ ${endSec.toFixed(1)}s (${duration.toFixed(1)}s)…`);
     } else {
       ui.toast('在后台解码完整音频…');
@@ -579,23 +586,40 @@ async function onDecode(pcm, sr) {
 
     const dsp = { ...readDspOptions(), engine: 'mmsstv' };
     const receive = readReceiveOptions();
-    const result = state.webDecoder
-      // Offline files need one final frame. Re-decoding and transferring every
-      // eight provisional rows makes a 640x496 PD120 recording run dozens of
-      // full prefix decodes before the real result is returned.
-      ? await state.webDecoder.decode(work, sr, { ...receive, dsp, emitFrames: false })
-      : decode(work, sr, {
+    const output = state.webDecoder
+      ? await state.webDecoder.decodeAll(work, sr, {
           ...receive,
           dsp,
           onProgress: progress => setOfflineDecodeProgress(
-            0.5 + Math.max(0, Math.min(1, progress)) * 0.49,
-            `正在重建图像 ${Math.round(progress * 100)}%`
+            progress,
+            `正在扫描并重建图像 ${Math.round(progress * 100)}%`
+          ),
+        })
+      : decodeAll(work, sr, {
+          ...receive,
+          dsp,
+          onProgress: progress => setOfflineDecodeProgress(
+            progress,
+            `正在扫描并重建图像 ${Math.round(progress * 100)}%`
           ),
         });
     if (decodeGeneration !== state.decodeGeneration) return;
-    renderReceiverFrame(result);
-    setOfflineDecodeProgress(1, `${result.mode.name} · 解码完成`, 'complete');
-    ui.toast(`解码完成 · ${result.mode.name}`, 'success');
+    const frames = output.frames.map(frame => ({
+      ...frame,
+      startSec: (selectionStartSample + frame.audioRange.startSample) / sr,
+      endSec: (selectionStartSample + frame.audioRange.endSample) / sr,
+    }));
+    setDecodedFrames(frames);
+    const result = frames[0].result;
+    const incompleteCount = frames.filter(frame => !frame.complete).length;
+    setOfflineDecodeProgress(1, `${result.mode.name} · ${frames.length} 张解码完成`, 'complete');
+    const notices = [];
+    if (incompleteCount) notices.push(`${incompleteCount} 张不完整`);
+    if (output.skippedCount) notices.push(`跳过 ${output.skippedCount} 个无效帧`);
+    ui.toast(
+      `解码完成 · ${result.mode.name} · ${frames.length} 张${notices.length ? ` · ${notices.join('，')}` : ''}`,
+      'success'
+    );
   } catch (e) {
     console.error(e);
     if (decodeGeneration === state.decodeGeneration) {
@@ -752,9 +776,36 @@ export function updateSnrMeter(snrDb = null) {
   if (output) output.textContent = `${measured.toFixed(1)} dB`;
 }
 
-export function renderReceiverFrame(result) {
-  state.decodedResult = result;
-  ui.renderToCanvas(document.getElementById('resultCanvas'), result.pixels, result.width, result.height);
+function formatAudioTime(seconds) {
+  const tenths = Math.max(0, Math.round((Number(seconds) || 0) * 10));
+  const wholeSeconds = Math.floor(tenths / 10);
+  const fraction = tenths % 10;
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const secs = wholeSeconds % 60;
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${fraction}`
+    : `${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${fraction}`;
+}
+
+function activeDecodedFrame() {
+  return state.decodedFrames[state.activeDecodedFrameIndex] || null;
+}
+
+export function setDecodedFrames(frames) {
+  state.decodedFrames = Array.isArray(frames) ? frames.slice() : [];
+  state.activeDecodedFrameIndex = state.decodedFrames.length ? 0 : -1;
+  if (state.activeDecodedFrameIndex >= 0) showDecodedFrame(0);
+}
+
+export function showDecodedFrame(index) {
+  if (!state.decodedFrames.length) return;
+  const nextIndex = Math.max(0, Math.min(state.decodedFrames.length - 1, Number(index) || 0));
+  state.activeDecodedFrameIndex = nextIndex;
+  const frame = state.decodedFrames[nextIndex];
+  const { result } = frame;
+  const canvas = document.getElementById('resultCanvas');
+  ui.renderToCanvas(canvas, result.pixels, result.width, result.height);
   document.getElementById('saveImageBtn').disabled = false;
   document.getElementById('resetDecodedBtn').disabled = false;
   document.getElementById('decoderOutput').classList.remove('is-empty');
@@ -762,12 +813,43 @@ export function renderReceiverFrame(result) {
   document.getElementById('receiverAfc').textContent = result.dsp?.afcLocked
     ? `${result.dsp.afcOffsetHz >= 0 ? '+' : ''}${result.dsp.afcOffsetHz.toFixed(1)} Hz`
     : (result.dsp?.afc ? '未锁定' : '关闭');
+
+  const hasAudioRange = Number.isFinite(frame.startSec) && Number.isFinite(frame.endSec);
+  const frameInfo = document.getElementById('resultFrameInfo');
+  frameInfo.hidden = !hasAudioRange;
+  if (hasAudioRange) {
+    const rangeText = `${formatAudioTime(frame.startSec)} - ${formatAudioTime(frame.endSec)}`;
+    document.getElementById('resultAudioRange').textContent = rangeText;
+    const incomplete = document.getElementById('resultIncomplete');
+    incomplete.hidden = frame.complete !== false;
+    incomplete.textContent = `不完整 ${Math.round((frame.completionRatio || 0) * 100)}%`;
+    canvas.setAttribute(
+      'aria-label',
+      `第 ${nextIndex + 1} 张解码图像，音频 ${formatAudioTime(frame.startSec)} 至 ${formatAudioTime(frame.endSec)}`
+    );
+  } else {
+    canvas.setAttribute('aria-label', '解码结果图像');
+  }
+
+  const pagination = document.getElementById('resultPagination');
+  const hasMultipleFrames = state.decodedFrames.length > 1;
+  pagination.hidden = !hasMultipleFrames;
+  document.getElementById('decodedPageCount').textContent =
+    `${String(nextIndex + 1).padStart(2, '0')} / ${String(state.decodedFrames.length).padStart(2, '0')}`;
+  document.getElementById('previousDecodedFrame').disabled = nextIndex === 0;
+  document.getElementById('nextDecodedFrame').disabled = nextIndex === state.decodedFrames.length - 1;
+}
+
+export function renderReceiverFrame(result) {
+  setDecodedFrames([{ result, complete: true, completionRatio: 1 }]);
 }
 
 export function resetDecodedResult({ announce = false, resetProgress = true } = {}) {
   state.decodeGeneration++;
   state.offlineDecodeActive = false;
-  state.decodedResult = null;
+  state.webDecoder?.cancelBatch('Decoded images reset');
+  state.decodedFrames = [];
+  state.activeDecodedFrameIndex = -1;
 
   const canvas = document.getElementById('resultCanvas');
   if (canvas) {
@@ -780,6 +862,12 @@ export function resetDecodedResult({ announce = false, resetProgress = true } = 
   }
 
   document.getElementById('decoderOutput')?.classList.add('is-empty');
+  const frameInfo = document.getElementById('resultFrameInfo');
+  const pagination = document.getElementById('resultPagination');
+  if (frameInfo) frameInfo.hidden = true;
+  if (pagination) pagination.hidden = true;
+  const canvasLabel = document.getElementById('resultCanvas');
+  canvasLabel?.setAttribute('aria-label', '解码结果图像');
   const saveButton = document.getElementById('saveImageBtn');
   const resetButton = document.getElementById('resetDecodedBtn');
   if (saveButton) saveButton.disabled = true;
@@ -789,7 +877,7 @@ export function resetDecodedResult({ announce = false, resetProgress = true } = 
   if (mode) mode.textContent = '--';
   if (afc) afc.textContent = '--';
   if (resetProgress) hideOfflineDecodeProgress();
-  if (announce) ui.toast('解码画面已重置', 'success');
+  if (announce) ui.toast('全部解码画面已重置', 'success');
 }
 
 function setReceiverStatus(text, stateClass = '') {
@@ -1123,20 +1211,34 @@ function setRangeValidity(valid) {
 }
 
 async function saveDecodedImage() {
-  if (!state.decodedResult) return;
+  const frame = activeDecodedFrame();
+  if (!frame) return;
   const format = document.getElementById('imageFormat').value;
   try {
     const blob = await canvasBlob(document.getElementById('resultCanvas'), format);
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `sstv_${state.decodedResult.mode.name.replace(/\s+/g, '_')}_${Date.now()}.${format}`;
+    const page = String(state.activeDecodedFrameIndex + 1).padStart(3, '0');
+    const timeRange = Number.isFinite(frame.startSec) && Number.isFinite(frame.endSec)
+      ? `_${audioTimeFilenameToken(frame.startSec)}-${audioTimeFilenameToken(frame.endSec)}`
+      : `_${Date.now()}`;
+    link.download = `sstv_${frame.result.mode.name.replace(/\s+/g, '_')}_${page}${timeRange}.${format}`;
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     ui.toast(`图片已保存为 ${format.toUpperCase()}`, 'success');
   } catch (error) {
     ui.toast(`图片保存失败: ${error.message}`, 'error');
   }
+}
+
+function audioTimeFilenameToken(seconds) {
+  const tenths = Math.max(0, Math.round((Number(seconds) || 0) * 10));
+  const wholeSeconds = Math.floor(tenths / 10);
+  const hours = Math.floor(wholeSeconds / 3600);
+  const minutes = Math.floor((wholeSeconds % 3600) / 60);
+  const secs = wholeSeconds % 60;
+  return `${hours ? `${hours}h` : ''}${String(minutes).padStart(2, '0')}m${String(secs).padStart(2, '0')}s${tenths % 10}`;
 }
 
 // ---- 音频上传(WAV / MP3 等)----

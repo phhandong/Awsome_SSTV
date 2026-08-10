@@ -18,6 +18,11 @@ import { decodeNarrowFSKHeader, decodeVISHeader } from './vis.js';
 import { detectSyncMode, resolveReceiveMode } from './sync-acquisition.js';
 
 const SYNC_ONLY_ROBOT_LOCK_PULSES = 32;
+const BATCH_ACQUISITION_RATE = 11025;
+const BATCH_SCAN_WINDOW_SECONDS = 5;
+const BATCH_SCAN_OVERLAP_SECONDS = 1;
+const BATCH_FRAME_PREROLL_SECONDS = 0.08;
+const BATCH_FRAME_TAIL_SECONDS = 0.08;
 
 /**
  * @param {Float32Array} samples  PCM
@@ -71,12 +76,29 @@ export function decode(samples, sampleRate, opts = {}) {
   // 3. Acquisition: a selected mode bypasses VIS. In automatic mode, use
   // MMSSTV's repeated sync-interval start when VIS/FSK cannot be decoded.
   const forcedMode = resolveReceiveMode(opts.mode);
+  const suppliedHeader = opts.knownHeader;
+  const suppliedAcquisition = opts.knownAcquisition;
   const vis = forcedMode ? null
-    : (decodeVISHeader(acquisitionFreq, acquisitionSr, 0)
-      || decodeNarrowFSKHeader(acquisitionFreq, acquisitionSr, 0));
+    : suppliedHeader
+      ? {
+          ...suppliedHeader,
+          sampleOffset: Math.round(suppliedHeader.sampleOffset * acquisitionSr / sampleRate),
+          headerStartSample: Math.round(suppliedHeader.headerStartSample * acquisitionSr / sampleRate),
+        }
+      : (decodeVISHeader(acquisitionFreq, acquisitionSr, 0)
+        || decodeNarrowFSKHeader(acquisitionFreq, acquisitionSr, 0));
   let acquisition;
   let mode;
-  if (forcedMode) {
+  if (suppliedAcquisition) {
+    mode = resolveReceiveMode(suppliedAcquisition.mode);
+    if (!mode) throw new Error('Invalid known SSTV acquisition mode');
+    acquisition = {
+      ...suppliedAcquisition,
+      source: 'sync',
+      mode,
+      sampleOffset: Math.round(suppliedAcquisition.sampleOffset * acquisitionSr / sampleRate),
+    };
+  } else if (forcedMode) {
     mode = forcedMode;
     const inputOffset = Math.max(0, opts.startSample || 0);
     acquisition = {
@@ -86,7 +108,7 @@ export function decode(samples, sampleRate, opts = {}) {
   } else if (vis) {
     mode = getMode(vis.visCode7);
     if (!mode) throw new Error('未知 VIS 码: ' + vis.visCode7);
-    acquisition = { ...vis, source: vis.extended || mode.narrow ? 'fsk' : 'vis', mode };
+    acquisition = { ...vis, source: vis.fsk || mode.narrow ? 'fsk' : 'vis', mode };
   } else if (opts.autoSync !== false) {
     acquisition = detectSyncMode(acquisitionFreq, acquisitionSr, opts.syncOptions);
     mode = acquisition?.mode;
@@ -120,6 +142,7 @@ export function decode(samples, sampleRate, opts = {}) {
     const phase = demodulatePhase(phaseInput, sr, { baseband });
     freq = phase.freq;
     groupDelaySamples = phase.groupDelaySamples;
+    dspState.groupDelaySamples = groupDelaySamples;
     dspState.baseband = { lowHz: phase.lowHz, highHz: phase.highHz };
     dspState.phaseTaps = phase.taps;
     acquisition = {
@@ -164,7 +187,14 @@ export function decode(samples, sampleRate, opts = {}) {
     const fallbackOffset = demodulator === 'phase' ? dspState.afcOffsetHz : 0;
     const lineOffsets = new Float32Array(height).fill(fallbackOffset);
     decodeRgb(freq, mode, firstScanStarts, lineOffsets, sr, pixels, width, height, opts);
-    return { width, height, pixels, mode, dsp: dspState, acquisition };
+    const reconstruction = reconstructionCoverage(
+      mode,
+      firstScanStarts,
+      sr,
+      freq.length,
+      Math.max(groupDelaySamples, Math.ceil(0.005 * sr))
+    );
+    return { width, height, pixels, mode, dsp: dspState, acquisition, reconstruction };
   }
 
   // 4. 同步脉冲搜索 + 斜率校正
@@ -299,7 +329,535 @@ export function decode(samples, sampleRate, opts = {}) {
     decodeRgb(freq, mode, firstScanStarts, lineOffsets, sr, pixels, width, height, opts);
   }
 
-  return { width, height, pixels, mode, dsp: dspState, acquisition };
+  const reconstruction = reconstructionCoverage(
+    mode,
+    firstScanStarts,
+    sr,
+    freq.length,
+    Math.max(groupDelaySamples, Math.ceil(0.005 * sr))
+  );
+  return { width, height, pixels, mode, dsp: dspState, acquisition, reconstruction };
+}
+
+/**
+ * Decode every header-delimited SSTV frame in an offline PCM selection.
+ * Sample positions in the returned ranges use the input PCM coordinate space.
+ */
+export function decodeAll(samples, sampleRate, opts = {}) {
+  if (!(samples instanceof Float32Array)) samples = Float32Array.from(samples || []);
+  if (!samples.length || !Number.isFinite(sampleRate) || sampleRate <= 0) {
+    throw new Error('无可解码的音频样本');
+  }
+
+  const {
+    onFrame,
+    onBatchProgress,
+    onProgress,
+    ...decodeOptions
+  } = opts;
+  const progressCallback = onBatchProgress || onProgress;
+  let lastProgress = 0;
+  const reportProgress = value => {
+    const progress = Math.max(lastProgress, Math.min(1, Number(value) || 0));
+    lastProgress = progress;
+    progressCallback?.(progress);
+  };
+
+  const forcedMode = resolveReceiveMode(decodeOptions.mode);
+
+  reportProgress(0.01);
+  const acquisitionPcm = sampleRate === BATCH_ACQUISITION_RATE
+    ? samples
+    : resample(samples, sampleRate, BATCH_ACQUISITION_RATE);
+  const dspOpts = decodeOptions.dsp || decodeOptions;
+  const acquisitionLms = dspOpts.lms === true && dspOpts.lmsOptions?.strength !== 0;
+  const rawAcquisitionFreq = demodulate(acquisitionPcm, BATCH_ACQUISITION_RATE, {
+    bpf: dspOpts.bpf === true,
+    lms: acquisitionLms,
+    lmsOptions: dspOpts.lmsOptions,
+    afc: dspOpts.afc === true,
+    engine: dspOpts.engine || 'mmsstv',
+  });
+  let acquisitionFreq = rawAcquisitionFreq;
+  if (dspOpts.afc === true) {
+    acquisitionFreq = applyAFC(
+      acquisitionFreq,
+      BATCH_ACQUISITION_RATE,
+      dspOpts.afcOptions
+    ).freq;
+  }
+  reportProgress(0.08);
+
+  const frames = [];
+  let skippedCount = 0;
+  let recognizedHeaders = 0;
+  let lockedMode = forcedMode;
+  const scanStep = Math.floor(
+    (BATCH_SCAN_WINDOW_SECONDS - BATCH_SCAN_OVERLAP_SECONDS) * BATCH_ACQUISITION_RATE
+  );
+  let cursor = 0;
+
+  while (cursor < acquisitionFreq.length) {
+    const header = findNextBatchHeader(acquisitionFreq, BATCH_ACQUISITION_RATE, cursor)
+      || (acquisitionFreq !== rawAcquisitionFreq
+        ? findNextBatchHeader(rawAcquisitionFreq, BATCH_ACQUISITION_RATE, cursor)
+        : null);
+    if (!header) {
+      cursor += scanStep;
+      reportProgress(0.08 + 0.9 * Math.min(1, cursor / acquisitionFreq.length));
+      continue;
+    }
+
+    recognizedHeaders++;
+    const mode = getMode(header.visCode7);
+    if (!mode) {
+      skippedCount++;
+      cursor = Math.max(cursor + 1, header.sampleOffset + Math.floor(0.1 * BATCH_ACQUISITION_RATE));
+      continue;
+    }
+    if (lockedMode && mode.visCode !== lockedMode.visCode) {
+      cursor = Math.max(cursor + 1, header.sampleOffset + Math.floor(0.1 * BATCH_ACQUISITION_RATE));
+      continue;
+    }
+
+    const acquisitionDuration = modeFrameSamples(mode, BATCH_ACQUISITION_RATE);
+    const expectedEndAcquisition = header.sampleOffset + acquisitionDuration;
+    const headerStartSample = acquisitionToInputSample(
+      header.headerStartSample,
+      sampleRate
+    );
+    const imageStartSample = acquisitionToInputSample(header.sampleOffset, sampleRate);
+    const expectedEndSample = imageStartSample + modeFrameSamples(mode, sampleRate);
+    const sliceStart = Math.max(
+      0,
+      headerStartSample - Math.floor(BATCH_FRAME_PREROLL_SECONDS * sampleRate)
+    );
+    const sliceEnd = Math.min(
+      samples.length,
+      expectedEndSample + Math.ceil(BATCH_FRAME_TAIL_SECONDS * sampleRate)
+    );
+
+    try {
+      const frameSpan = Math.max(1, expectedEndAcquisition - header.headerStartSample);
+      const result = decode(samples.subarray(sliceStart, sliceEnd), sampleRate, {
+        ...decodeOptions,
+        mode: 'auto',
+        knownHeader: {
+          ...header,
+          headerStartSample: headerStartSample - sliceStart,
+          sampleOffset: imageStartSample - sliceStart,
+        },
+        onProgress: inner => {
+          const position = header.headerStartSample + Math.max(0, Math.min(1, inner)) * frameSpan;
+          reportProgress(0.08 + 0.9 * Math.min(1, position / acquisitionFreq.length));
+        },
+      });
+      const coverage = frameCoverage(
+        mode,
+        sampleRate,
+        imageStartSample,
+        expectedEndSample,
+        samples.length,
+        result.reconstruction
+      );
+      if (coverage.completedRows < 1) {
+        skippedCount++;
+      } else {
+        const frame = {
+          result,
+          audioRange: {
+            startSample: headerStartSample,
+            imageStartSample,
+            endSample: coverage.endSample,
+          },
+          expectedEndSample,
+          complete: coverage.complete,
+          completionRatio: coverage.completionRatio,
+        };
+        lockedMode ||= mode;
+        frames.push(frame);
+      }
+    } catch (_) {
+      skippedCount++;
+    }
+
+    cursor = Math.max(cursor + 1, expectedEndAcquisition);
+    reportProgress(0.08 + 0.9 * Math.min(1, cursor / acquisitionFreq.length));
+  }
+
+  if (!frames.length) {
+    if (recognizedHeaders > 0 && !forcedMode) {
+      throw new Error('检测到 SSTV 标头，但没有可重建的图像行');
+    }
+    const frame = decodeFallbackFrame(samples, sampleRate, decodeOptions, reportProgress);
+    if (recognizedHeaders === 0
+        && frame.completionRatio + 1e-9 < BATCH_SYNC_PARTIAL_MIN_RATIO) {
+      throw new Error('Headerless SSTV fragment is below the 20% reconstruction threshold');
+    }
+    frames.push(frame);
+    lockedMode = frame.result.mode;
+  }
+
+  if (lockedMode && !lockedMode.noSync) {
+    const syncCandidates = findBatchSyncCandidates(
+      acquisitionFreq,
+      BATCH_ACQUISITION_RATE,
+      lockedMode
+    );
+    for (let index = 0; index < syncCandidates.length; index++) {
+      const candidate = syncCandidates[index];
+      const imageStartSample = acquisitionToInputSample(candidate.sampleOffset, sampleRate);
+      const expectedEndSample = imageStartSample + modeFrameSamples(lockedMode, sampleRate);
+      if (overlapsDecodedFrame(imageStartSample, frames, lockedMode, sampleRate)) {
+        continue;
+      }
+      const sliceStart = Math.max(
+        0,
+        imageStartSample - Math.floor(BATCH_FRAME_PREROLL_SECONDS * sampleRate)
+      );
+      const sliceEnd = Math.min(
+        samples.length,
+        expectedEndSample + Math.ceil(BATCH_FRAME_TAIL_SECONDS * sampleRate)
+      );
+      try {
+        const result = decode(samples.subarray(sliceStart, sliceEnd), sampleRate, {
+          ...decodeOptions,
+          mode: 'auto',
+          knownAcquisition: {
+            mode: lockedMode,
+            sampleOffset: imageStartSample - sliceStart,
+          },
+          onProgress: inner => {
+            const position = candidate.sampleOffset
+              + Math.max(0, Math.min(1, inner)) * modeFrameSamples(lockedMode, BATCH_ACQUISITION_RATE);
+            reportProgress(0.08 + 0.9 * Math.min(1, position / acquisitionFreq.length));
+          },
+        });
+        const coverage = frameCoverage(
+          lockedMode,
+          sampleRate,
+          imageStartSample,
+          expectedEndSample,
+          samples.length,
+          result.reconstruction
+        );
+        if (coverage.completionRatio + 1e-9 < BATCH_SYNC_PARTIAL_MIN_RATIO) {
+          skippedCount++;
+          continue;
+        }
+        frames.push({
+          result,
+          audioRange: {
+            startSample: imageStartSample,
+            imageStartSample,
+            endSample: coverage.endSample,
+          },
+          expectedEndSample,
+          complete: coverage.complete,
+          completionRatio: coverage.completionRatio,
+        });
+      } catch (_) {
+        skippedCount++;
+      }
+    }
+  }
+
+  frames.sort((a, b) => a.audioRange.startSample - b.audioRange.startSample);
+  for (const frame of frames) onFrame?.(frame);
+
+  reportProgress(1);
+  return { frames, skippedCount, mode: lockedMode };
+}
+
+const BATCH_SYNC_PARTIAL_MIN_RATIO = 0.20;
+const BATCH_SYNC_SEED_LINES = 10;
+const BATCH_SYNC_SEED_MATCHES = 9;
+const BATCH_SYNC_STRONG_SEED_MATCHES = 10;
+
+function findBatchSyncCandidates(freq, sampleRate, mode) {
+  if (!mode || mode.noSync) return [];
+  const targetHz = mode.syncFreq ?? FREQ.SYNC;
+  const toleranceHz = mode.narrow ? 100 : 120;
+  const strong = findSyncPulses(freq, sampleRate, 4, 0.25, targetHz, toleranceHz);
+  const weak = findSyncPulses(freq, sampleRate, 4, 0.12, targetHz, toleranceHz);
+  const pulses = mergeNearbyPulses([...strong, ...weak].sort((a, b) => a - b), sampleRate);
+  const nominalPeriod = (mode.syncPeriodMs || mode.lineDurationMs) * sampleRate / 1000;
+  const period = estimateBatchSyncPeriod(strong, nominalPeriod);
+  const lineCount = mode.dataLines || mode.height;
+  const clockTolerance = Math.max(3 * sampleRate / 1000, period * 0.08);
+  const candidates = [];
+  let cursor = 0;
+
+  while (cursor < freq.length) {
+    const firstIndex = lowerBound(pulses, cursor);
+    let best = null;
+    let firstViable = null;
+    for (let i = firstIndex; i < pulses.length; i++) {
+      const anchor = pulses[i];
+      if (firstViable != null && anchor > firstViable + period) break;
+      const seed = scoreSyncClock(pulses, anchor, period, clockTolerance, BATCH_SYNC_SEED_LINES);
+      if (seed.matches < BATCH_SYNC_SEED_MATCHES) continue;
+      const strongSeed = scoreSyncClock(
+        strong,
+        anchor,
+        period,
+        clockTolerance,
+        BATCH_SYNC_SEED_LINES
+      );
+      const seedEnd = anchor + BATCH_SYNC_SEED_LINES * period;
+      const localPulseCount = lowerBound(pulses, seedEnd) - lowerBound(pulses, anchor - clockTolerance);
+      if (cursor > clockTolerance && strongSeed.leadingMatches < 4) continue;
+      if (cursor > clockTolerance
+          && strongSeed.matches < BATCH_SYNC_STRONG_SEED_MATCHES
+          && (localPulseCount > BATCH_SYNC_SEED_LINES * 2
+            || seed.error / seed.matches > clockTolerance * 0.30)) continue;
+      firstViable ??= anchor;
+      const total = scoreSyncClock(pulses, anchor, period, clockTolerance, lineCount);
+      const score = seed.matches * 1000 + total.matches * 10;
+      if (!best || score > best.score) best = { sampleOffset: anchor, score, matches: total.matches };
+    }
+    if (!best) break;
+
+    if (cursor <= clockTolerance) {
+      const previous = refineBatchSyncStart(
+        freq,
+        best.sampleOffset - period,
+        period,
+        mode,
+        sampleRate
+      );
+      if (previous && previous.sampleOffset >= cursor) best.sampleOffset = previous.sampleOffset;
+    }
+
+    const availableLines = Math.max(
+      0,
+      Math.min(lineCount, Math.floor((freq.length - best.sampleOffset) / Math.max(1, period)))
+    );
+    if (availableLines / lineCount + 1e-9 >= BATCH_SYNC_PARTIAL_MIN_RATIO) {
+      candidates.push(best);
+    }
+    cursor = Math.max(best.sampleOffset + lineCount * period - clockTolerance, best.sampleOffset + period);
+  }
+  return candidates;
+}
+
+function estimateBatchSyncPeriod(pulses, nominalPeriod) {
+  const periods = [];
+  for (let i = 1; i < pulses.length; i++) {
+    const gap = pulses[i] - pulses[i - 1];
+    if (gap >= nominalPeriod * 0.85 && gap <= nominalPeriod * 1.15) periods.push(gap);
+  }
+  if (periods.length < 4) return nominalPeriod;
+  periods.sort((a, b) => a - b);
+  return periods[periods.length >> 1];
+}
+
+function refineBatchSyncStart(freq, expected, period, mode, sampleRate) {
+  if (expected < 0) return null;
+  const sync = mode.lineSegments.find(segment => segment.type === SegType.SYNC);
+  if (!sync) return null;
+  const window = Math.max(1, Math.floor(sync.durationMs * sampleRate / 1000));
+  const radius = Math.floor(period * 0.10);
+  const target = mode.syncFreq ?? FREQ.SYNC;
+  const tolerance = mode.narrow ? 100 : 120;
+  let bestStart = -1;
+  let bestMatches = 0;
+  for (let start = Math.max(0, Math.floor(expected - radius));
+    start <= Math.min(freq.length - window, Math.ceil(expected + radius)); start++) {
+    let matches = 0;
+    for (let i = 0; i < window; i++) {
+      if (Math.abs(freq[start + i] - target) <= tolerance) matches++;
+    }
+    if (matches > bestMatches) {
+      bestMatches = matches;
+      bestStart = start;
+    }
+  }
+  return bestMatches >= window * 0.50 ? { sampleOffset: bestStart, confidence: bestMatches / window } : null;
+}
+
+function scoreSyncClock(pulses, anchor, period, tolerance, count) {
+  let matches = 0;
+  let error = 0;
+  let leadingMatches = 0;
+  let leading = true;
+  let searchIndex = lowerBound(pulses, anchor - tolerance);
+  for (let ordinal = 0; ordinal < count; ordinal++) {
+    const expected = anchor + ordinal * period;
+    while (searchIndex < pulses.length && pulses[searchIndex] < expected - tolerance) searchIndex++;
+    let bestError = Infinity;
+    for (let i = searchIndex; i < pulses.length && pulses[i] <= expected + tolerance; i++) {
+      bestError = Math.min(bestError, Math.abs(pulses[i] - expected));
+    }
+    if (bestError <= tolerance) {
+      matches++;
+      error += bestError;
+      if (leading) leadingMatches++;
+    } else {
+      leading = false;
+    }
+  }
+  return { matches, error, leadingMatches };
+}
+
+function mergeNearbyPulses(pulses, sampleRate) {
+  const minimumGap = Math.max(1, Math.floor(3 * sampleRate / 1000));
+  const merged = [];
+  for (const pulse of pulses) {
+    if (!merged.length || pulse - merged[merged.length - 1] >= minimumGap) merged.push(pulse);
+  }
+  return merged;
+}
+
+function lowerBound(values, target) {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >>> 1;
+    if (values[mid] < target) low = mid + 1;
+    else high = mid;
+  }
+  return low;
+}
+
+function overlapsDecodedFrame(startSample, frames, mode, sampleRate) {
+  const frameSpan = Math.max(1, modeFrameSamples(mode, sampleRate));
+  return frames.some(frame => (
+    Math.abs(startSample - frame.audioRange.imageStartSample) < frameSpan * 0.5
+  ));
+}
+
+function findNextBatchHeader(freq, sampleRate, searchStart) {
+  const vis = decodeVISHeader(freq, sampleRate, searchStart, { allowLaterSingle: true });
+  const fsk = decodeNarrowFSKHeader(freq, sampleRate, searchStart);
+  if (!vis) return fsk;
+  if (!fsk) return vis;
+  return vis.headerStartSample <= fsk.headerStartSample ? vis : fsk;
+}
+
+function acquisitionToInputSample(sample, inputSampleRate) {
+  return Math.max(0, Math.round(sample * inputSampleRate / BATCH_ACQUISITION_RATE));
+}
+
+function modeLineSamples(mode, sampleRate) {
+  if (Number.isFinite(mode.syncPeriodMs)) {
+    return Math.round(mode.syncPeriodMs * sampleRate / 1000);
+  }
+  if (mode.robot36Legacy) {
+    return mode.lineSegments.reduce(
+      (total, segment) => total + Math.floor(segment.durationMs * sampleRate / 1000),
+      0
+    );
+  }
+  return Math.round(mode.lineDurationMs * sampleRate / 1000);
+}
+
+function modeInitialSamples(mode, sampleRate) {
+  if (!mode.needsInitialSync) return 0;
+  return Math.floor(9 * sampleRate / 1000) + Math.floor(1.5 * sampleRate / 1000);
+}
+
+function modeFrameSamples(mode, sampleRate) {
+  const lineCount = mode.dataLines || mode.height;
+  return modeInitialSamples(mode, sampleRate) + lineCount * modeLineSamples(mode, sampleRate);
+}
+
+function frameCoverage(
+  mode,
+  sampleRate,
+  imageStartSample,
+  expectedEndSample,
+  availableSamples,
+  reconstruction = null
+) {
+  const endSample = Math.min(expectedEndSample, availableSamples);
+  const tolerance = Math.ceil(0.005 * sampleRate);
+  const complete = endSample >= expectedEndSample - tolerance;
+  const lineCount = mode.dataLines || mode.height;
+  const lineSamples = Math.max(1, modeLineSamples(mode, sampleRate));
+  const dataSamples = Math.max(
+    0,
+    endSample - imageStartSample - modeInitialSamples(mode, sampleRate)
+  );
+  const completedLines = complete
+    ? lineCount
+    : Math.min(lineCount, Math.floor(dataSamples / lineSamples));
+  let completedRows = Math.min(
+    mode.height,
+    completedLines * (mode.pairedLines ? 2 : 1)
+  );
+  if (Number.isFinite(reconstruction?.completedRows)) {
+    completedRows = Math.min(completedRows, reconstruction.completedRows);
+  }
+  const completionRatio = completedRows / mode.height;
+  return {
+    endSample,
+    complete: complete && completionRatio === 1,
+    completedRows,
+    completionRatio,
+  };
+}
+
+function reconstructionCoverage(mode, firstScanStarts, sampleRate, availableSamples, trailingTolerance = 0) {
+  const layout = segmentLayoutFromFirstScan(mode, sampleRate);
+  const requiredEnd = layout.length ? layout[layout.length - 1].endSamples : 0;
+  let completedLines = 0;
+  let lastSample = 0;
+  for (const lineStart of firstScanStarts) {
+    if (!Number.isFinite(lineStart)) continue;
+    const lineEnd = Math.ceil(lineStart + requiredEnd);
+    if (lineStart >= 0 && lineEnd <= availableSamples + trailingTolerance) {
+      completedLines++;
+      lastSample = Math.max(lastSample, lineEnd);
+    }
+  }
+  const completedRows = Math.min(
+    mode.height,
+    completedLines * (mode.pairedLines ? 2 : 1)
+  );
+  return {
+    completedRows,
+    completionRatio: completedRows / mode.height,
+    lastSample,
+  };
+}
+
+function decodeFallbackFrame(samples, sampleRate, options, reportProgress) {
+  const result = decode(samples, sampleRate, {
+    ...options,
+    onProgress: progress => reportProgress(0.1 + 0.88 * progress),
+  });
+  const acquisitionRate = result.dsp?.demodulator === 'phase'
+    ? sampleRate
+    : BATCH_ACQUISITION_RATE;
+  const groupDelay = result.dsp?.groupDelaySamples || 0;
+  const imageStartSample = result.acquisition.source === 'manual'
+    ? Math.max(0, options.startSample || 0)
+    : Math.max(
+        0,
+        Math.round((result.acquisition.sampleOffset - groupDelay) * sampleRate / acquisitionRate)
+      );
+  const expectedEndSample = imageStartSample + modeFrameSamples(result.mode, sampleRate);
+  const coverage = frameCoverage(
+    result.mode,
+    sampleRate,
+    imageStartSample,
+    expectedEndSample,
+    samples.length,
+    result.reconstruction
+  );
+  if (coverage.completedRows < 1) throw new Error('没有可重建的图像行');
+  return {
+    result,
+    audioRange: {
+      startSample: imageStartSample,
+      imageStartSample,
+      endSample: coverage.endSample,
+    },
+    expectedEndSample,
+    complete: coverage.complete,
+    completionRatio: coverage.completionRatio,
+  };
 }
 
 function segmentLayoutFromFirstScan(mode, sr) {

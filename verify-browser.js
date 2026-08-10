@@ -70,6 +70,7 @@ async function verifyViewport(name, viewport) {
     footer: {
       childCount: document.querySelector('.radio-footer')?.children.length,
       links: [...document.querySelectorAll('.radio-footer nav a')].map(link => link.textContent.trim()),
+      icons: document.querySelectorAll('.radio-footer .footer-link-icon').length,
       navCenter: (() => {
         const footer = document.querySelector('.radio-footer').getBoundingClientRect();
         const nav = document.querySelector('.radio-footer nav').getBoundingClientRect();
@@ -127,7 +128,8 @@ async function verifyViewport(name, viewport) {
     throw new Error(`${name}: permanent progress/player state or fast decode label is invalid ${JSON.stringify(decoderShell.persistentControls)}`);
   }
   if (decoderShell.meterCells !== 12 || decoderShell.footer.childCount !== 1 ||
-      decoderShell.footer.links.join('|') !== '💻 SOURCE|📄 LICENSE' || decoderShell.footer.navCenter > 1) {
+      decoderShell.footer.links.join('|') !== 'SOURCE|LICENSE' || decoderShell.footer.icons !== 2 ||
+      decoderShell.footer.navCenter > 1) {
     throw new Error(`${name}: signal meter or centered footer links are invalid`);
   }
   if (decoderShell.frequencyReadouts !== 0 || decoderShell.decodedMetadata !== 0 ||
@@ -164,11 +166,15 @@ async function verifyViewport(name, viewport) {
       progressBorder: style('.receiver-decode-track').borderColor,
       playhead: style('.audio-playhead').backgroundColor,
       playheadMarker: style('.audio-playhead', '::before').backgroundColor,
+      footerBackground: style('.radio-footer').backgroundColor,
+      githubIconColor: style('.github-icon').color,
     };
   });
   if (receiverContrast.signal === receiverContrast.panel || receiverContrast.progress === receiverContrast.panel ||
       receiverContrast.signalBorder === receiverContrast.panel || receiverContrast.progressBorder === receiverContrast.panel ||
-      receiverContrast.playhead !== 'rgb(59, 130, 246)' || receiverContrast.playheadMarker !== 'rgb(59, 130, 246)') {
+      receiverContrast.playhead !== 'rgb(59, 130, 246)' || receiverContrast.playheadMarker !== 'rgb(59, 130, 246)' ||
+      receiverContrast.footerBackground !== 'rgba(0, 0, 0, 0)' ||
+      receiverContrast.githubIconColor !== 'rgb(16, 32, 27)') {
     throw new Error(`${name}: receiver contrast or blue playhead styling is invalid ${JSON.stringify(receiverContrast)}`);
   }
   const telemetryLayout = await page.evaluate(() => {
@@ -290,6 +296,93 @@ async function verifyViewport(name, viewport) {
   });
   if (decoded.mode !== 'B/W 8' || decoded.pixelSum <= 0) throw new Error(`${name}: Worker/canvas decode failed`);
 
+  const batchDecoded = await page.evaluate(async () => {
+    const [{ encode }, { getMode }, { WebSSTVDecoder }, app] = await Promise.all([
+      import('./js/encoder.js'), import('./js/modes.js'), import('./js/web-receiver.js'), import('./js/app.js'),
+    ]);
+    const sampleRate = 11025;
+    const mode = getMode(2);
+    const makeImage = value => {
+      const rgba = new Uint8ClampedArray(mode.width * mode.height * 4);
+      for (let i = 0; i < rgba.length; i += 4) {
+        rgba[i] = rgba[i + 1] = rgba[i + 2] = value;
+        rgba[i + 3] = 255;
+      }
+      return { rgba };
+    };
+    const first = encode(makeImage(35), mode, { sampleRate });
+    const second = encode(makeImage(215), mode, { sampleRate });
+    const pcm = new Float32Array(first.length + second.length);
+    pcm.set(first);
+    pcm.set(second, first.length);
+    const responsivenessDecoder = new WebSSTVDecoder();
+    const longProbe = new Float32Array(48000 * 300);
+    let heartbeatTicks = 0;
+    const heartbeat = setInterval(() => heartbeatTicks++, 10);
+    const dispatchStarted = performance.now();
+    const cancelledProbe = responsivenessDecoder.decodeAll(longProbe, 48000, {
+      dsp: { engine: 'mmsstv', demodulator: 'phase' },
+    }).then(() => false, () => true);
+    const dispatchMs = performance.now() - dispatchStarted;
+    await new Promise(resolve => setTimeout(resolve, 80));
+    responsivenessDecoder.cancelBatch('responsiveness probe complete');
+    const probeCancelled = await cancelledProbe;
+    clearInterval(heartbeat);
+    responsivenessDecoder.destroy();
+
+    const decoder = new WebSSTVDecoder();
+    const batchOptions = {
+      dsp: { engine: 'mmsstv', demodulator: 'phase', afc: true, lms: true },
+    };
+    const staleJob = decoder.decodeAll(first, sampleRate, batchOptions).then(() => false, () => true);
+    const outputPromise = decoder.decodeAll(pcm, sampleRate, batchOptions);
+    const [staleRejected, output] = await Promise.all([staleJob, outputPromise]);
+    const selectionOffset = 12.3;
+    app.setDecodedFrames(output.frames.map(frame => ({
+      ...frame,
+      startSec: selectionOffset + frame.audioRange.startSample / sampleRate,
+      endSec: selectionOffset + frame.audioRange.endSample / sampleRate,
+    })));
+    decoder.destroy();
+    return {
+      count: output.frames.length,
+      staleRejected,
+      dispatchMs,
+      heartbeatTicks,
+      probeCancelled,
+      page: document.getElementById('decodedPageCount').textContent,
+      range: document.getElementById('resultAudioRange').textContent,
+      previousDisabled: document.getElementById('previousDecodedFrame').disabled,
+      nextDisabled: document.getElementById('nextDecodedFrame').disabled,
+      paginationHidden: document.getElementById('resultPagination').hidden,
+    };
+  });
+  if (batchDecoded.count !== 2 || !batchDecoded.staleRejected || !batchDecoded.probeCancelled ||
+      batchDecoded.dispatchMs > 50 || batchDecoded.heartbeatTicks < 2 ||
+      batchDecoded.page !== '01 / 02' || batchDecoded.paginationHidden ||
+      !batchDecoded.previousDisabled || batchDecoded.nextDisabled || !batchDecoded.range.startsWith('00:12.3')) {
+    throw new Error(`${name}: Worker multi-frame gallery failed ${JSON.stringify(batchDecoded)}`);
+  }
+  await page.click('#nextDecodedFrame');
+  const secondPage = await page.evaluate(() => ({
+    page: document.getElementById('decodedPageCount').textContent,
+    previousDisabled: document.getElementById('previousDecodedFrame').disabled,
+    nextDisabled: document.getElementById('nextDecodedFrame').disabled,
+    canvasLabel: document.getElementById('resultCanvas').getAttribute('aria-label'),
+    overflow: document.documentElement.scrollWidth - window.innerWidth,
+    controlsOverlapSettings: (() => {
+      const pagination = document.getElementById('resultPagination').getBoundingClientRect();
+      const settings = document.getElementById('rxSettingsToggle').getBoundingClientRect();
+      return pagination.left < settings.right && pagination.right > settings.left &&
+        pagination.top < settings.bottom && pagination.bottom > settings.top;
+    })(),
+  }));
+  if (secondPage.page !== '02 / 02' || secondPage.previousDisabled || !secondPage.nextDisabled ||
+      !secondPage.canvasLabel.includes('第 2 张') || secondPage.overflow > 1 || secondPage.controlsOverlapSettings) {
+    throw new Error(`${name}: second decoded page failed ${JSON.stringify(secondPage)}`);
+  }
+  await page.screenshot({ path: `test-artifacts/${name}-pagination.png`, fullPage: false });
+
   for (const format of ['png', 'bmp']) {
     await page.selectOption('#imageFormat', format);
     const downloadPromise = page.waitForEvent('download');
@@ -299,7 +392,8 @@ async function verifyViewport(name, viewport) {
     const signatureOk = format === 'png'
       ? bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
       : bytes.length > 54 && bytes[0] === 0x42 && bytes[1] === 0x4d && bytes.readUInt16LE(28) === 24;
-    if (!signatureOk || !download.suggestedFilename().endsWith(`.${format}`)) {
+    if (!signatureOk || !download.suggestedFilename().includes('_002_') ||
+        !download.suggestedFilename().endsWith(`.${format}`)) {
       throw new Error(`${name}: invalid ${format.toUpperCase()} download`);
     }
   }
@@ -557,6 +651,7 @@ async function verifyViewport(name, viewport) {
 
 try {
   await verifyViewport('desktop', { width: 1440, height: 1000 });
+  await verifyViewport('compact', { width: 1366, height: 768 });
   await verifyViewport('mobile', { width: 390, height: 844 });
 } finally {
   await browser.close();

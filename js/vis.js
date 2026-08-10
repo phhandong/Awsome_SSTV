@@ -15,6 +15,8 @@ import { FREQ } from './modes.js';
 const LEADER_MS = 300;
 const BREAK_MS = 10;
 const BIT_MS = 30;
+const DELAYED_STOP_SEARCH_MS = 90;
+const DELAYED_STOP_MIN_MS = 20;
 // decodeVISHeader locates the leader edge on a centered 3-ms moving average.
 // With a 1900 -> 1200 Hz edge and the 80-Hz leader tolerance, that edge is
 // observed about 1.15 ms early. Sync-bearing modes subsequently re-anchor on
@@ -92,7 +94,10 @@ export function decodeNarrowFSKHeader(freq, sr, searchStart = 0) {
     let transition = i + guard;
     const limit = Math.min(freq.length, transition + Math.floor(100 * sr / 1000));
     while (transition < limit && !near(freq[transition], FREQ.NARROW_SYNC, 90)) transition++;
-    if (transition < limit) { start = transition; break; }
+    if (transition < limit) {
+      start = transition;
+      break;
+    }
   }
   if (start < 0) return null;
 
@@ -110,13 +115,22 @@ export function decodeNarrowFSKHeader(freq, sr, searchStart = 0) {
   if (chars[0] !== 0x2d || chars[1] !== 0x15 || chars[3] !== ((chars[1] ^ chars[2]) & 0x3f)) return null;
   const modeKey = NARROW_FSK_CODES.get(chars[2]);
   if (!modeKey) return null;
-  return { visCode7: modeKey, sampleOffset: Math.floor(start + 24 * bitSamples), fsk: true };
+  const sampleOffset = Math.floor(start + 24 * bitSamples);
+  return {
+    visCode7: modeKey,
+    sampleOffset,
+    // Silence can make the zero-crossing demodulator hold its previous
+    // frequency, so the protocol duration is a more stable start coordinate
+    // than the first guard-like sample found by the search loop.
+    headerStartSample: Math.max(0, sampleOffset - Math.round((150 + 24 * 22) * sr / 1000)),
+    fsk: true,
+  };
 }
 
 // 解码端:在样本数组中检测 VIS 头。
 // 输入:demod 得到的频率数组 freq[](每样本一个频率估计),起始搜索偏移,采样率。
 // 返回:{ visCode7, sampleOffset } 或 null。sampleOffset 为 VIS 头结束(图像开始)的样本位置。
-export function decodeVISHeader(freq, sr, searchStart = 0) {
+export function decodeVISHeader(freq, sr, searchStart = 0, options = {}) {
   // VIS 检测对瞬时频率做局部平滑(3ms 窗):MP3/有损信号相噪大,单样本 1900Hz
   // 容差判定会失败。此处用平滑副本做 leader/位检测,不影响外部 freq(同步/像素重建仍用原值)。
   const searchEnd = Math.min(freq.length, searchStart + Math.floor(5 * sr));
@@ -150,7 +164,7 @@ export function decodeVISHeader(freq, sr, searchStart = 0) {
         // candidate requires the stronger, standard double-leader structure;
         // accepting arbitrary later single runs creates VIS false positives
         // inside Robot recordings.
-        if (decoded && (candidateOrdinal === 0 || decoded.doubleLeader)) {
+        if (decoded && (candidateOrdinal === 0 || decoded.doubleLeader || options.allowLaterSingle === true)) {
           return decoded.header;
         }
         candidateOrdinal++;
@@ -225,12 +239,20 @@ function decodeVISCandidate(sf, sr, leaderStart) {
       if (near(f, FREQ.VIS_BIT_1, 80)) high |= (1 << bit);
       else if (!near(f, FREQ.VIS_BIT_0, 80)) return null;
     }
-    const stopMid = p + 16 * bitSamples + Math.floor(bitSamples / 2);
-    if (stopMid >= sf.length || !near(sf[stopMid], FREQ.VIS_BREAK, 80)) return null;
-    const imageStart = p + 16 * bitSamples + Math.floor(BIT_MS * sr / 1000)
+    const nominalStopStart = p + 16 * bitSamples;
+    const stop = locateVISStop(sf, sr, nominalStopStart, doubleLeader);
+    if (!stop) return null;
+    const imageStart = stop.start + Math.floor(BIT_MS * sr / 1000)
       + Math.round(VIS_EDGE_ADVANCE_MS * sr / 1000);
     return {
-      header: { visCode7: (high << 8) | byte, sampleOffset: imageStart },
+      header: {
+        visCode7: (high << 8) | byte,
+        sampleOffset: imageStart,
+        headerStartSample: inferredHeaderStart(imageStart, sr, doubleLeader, true, stop.start - nominalStopStart),
+        extended: true,
+        recoveredStop: stop.recovered,
+        stopDelaySamples: stop.start - nominalStopStart,
+      },
       doubleLeader,
     };
   }
@@ -239,12 +261,59 @@ function decodeVISCandidate(sf, sr, leaderStart) {
   const code7 = byte & 0x7f;
   const parityBit = (byte >> 7) & 1;
   if (visParity(code7) !== parityBit) return null;
-  const stopMid = p + 8 * bitSamples + Math.floor(bitSamples / 2);
-  if (stopMid >= sf.length || !near(sf[stopMid], FREQ.VIS_BREAK, 80)) return null;
+  const nominalStopStart = p + 8 * bitSamples;
+  const stop = locateVISStop(sf, sr, nominalStopStart, doubleLeader);
+  if (!stop) return null;
 
-  const imageStart = p + 8 * bitSamples + Math.floor(BIT_MS * sr / 1000)
+  const imageStart = stop.start + Math.floor(BIT_MS * sr / 1000)
     + Math.round(VIS_EDGE_ADVANCE_MS * sr / 1000); // +stop bit + smoothed-edge timing
-  return { header: { visCode7: code7, sampleOffset: imageStart }, doubleLeader };
+  return {
+    header: {
+      visCode7: code7,
+      sampleOffset: imageStart,
+      headerStartSample: inferredHeaderStart(imageStart, sr, doubleLeader, false, stop.start - nominalStopStart),
+      recoveredStop: stop.recovered,
+      stopDelaySamples: stop.start - nominalStopStart,
+    },
+    doubleLeader,
+  };
+}
+
+function locateVISStop(freq, sr, nominalStart, allowRecovery) {
+  const stopMid = nominalStart + Math.floor(BIT_MS * sr / 2000);
+  if (stopMid < freq.length && near(freq[stopMid], FREQ.VIS_BREAK, 80)) {
+    return { start: nominalStart, recovered: false };
+  }
+  if (!allowRecovery) return null;
+
+  const minimum = Math.max(1, Math.floor(DELAYED_STOP_MIN_MS * sr / 1000));
+  const searchEnd = Math.min(
+    freq.length,
+    nominalStart + Math.ceil(DELAYED_STOP_SEARCH_MS * sr / 1000)
+  );
+  let cursor = nominalStart;
+  while (cursor < searchEnd) {
+    if (!near(freq[cursor], FREQ.VIS_BREAK, 80)) {
+      cursor++;
+      continue;
+    }
+    const runStart = cursor;
+    while (cursor < searchEnd && near(freq[cursor], FREQ.VIS_BREAK, 80)) cursor++;
+    if (cursor - runStart >= minimum) return { start: runStart, recovered: true };
+  }
+  return null;
+}
+
+function inferredHeaderStart(imageStart, sr, doubleLeader, extended, stopDelaySamples) {
+  const bitsMs = extended ? 16 * BIT_MS : 8 * BIT_MS;
+  const framingMs = LEADER_MS + BREAK_MS + BIT_MS + bitsMs + BIT_MS;
+  const doubleLeaderMs = doubleLeader ? LEADER_MS + BREAK_MS : 0;
+  return Math.max(
+    0,
+    imageStart
+      - Math.round((framingMs + doubleLeaderMs) * sr / 1000)
+      - stopDelaySamples
+  );
 }
 
 function near(a, b, tol) {

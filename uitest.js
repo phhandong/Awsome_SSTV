@@ -192,6 +192,40 @@ app.renderReceiverFrame({
 const decodedResultEnablesReset = !document.getElementById('resetDecodedBtn').disabled &&
   !document.getElementById('saveImageBtn').disabled &&
   !document.getElementById('decoderOutput').classList.contains('is-empty');
+const firstBatchResult = {
+  result: {
+    mode: { name: 'TEST' }, width: 2, height: 1,
+    pixels: new Uint8ClampedArray([20, 20, 20, 255, 30, 30, 30, 255]), dsp: {},
+  },
+  startSec: 12.3, endSec: 31.8, complete: true, completionRatio: 1,
+};
+const secondBatchResult = {
+  result: {
+    mode: { name: 'TEST' }, width: 3, height: 1,
+    pixels: new Uint8ClampedArray(12), dsp: {},
+  },
+  startSec: 45.2, endSec: 52.1, complete: false, completionRatio: 0.62,
+};
+app.setDecodedFrames([firstBatchResult, secondBatchResult]);
+const paginationStartsAtFirst = !document.getElementById('resultFrameInfo').hidden &&
+  !document.getElementById('resultPagination').hidden &&
+  document.getElementById('resultAudioRange').textContent === '00:12.3 - 00:31.8' &&
+  document.getElementById('decodedPageCount').textContent === '01 / 02' &&
+  document.getElementById('previousDecodedFrame').disabled &&
+  !document.getElementById('nextDecodedFrame').disabled;
+document.getElementById('nextDecodedFrame').click();
+const paginationShowsPartialSecond = document.getElementById('decodedPageCount').textContent === '02 / 02' &&
+  document.getElementById('resultAudioRange').textContent === '00:45.2 - 00:52.1' &&
+  document.getElementById('resultIncomplete').textContent === '不完整 62%' &&
+  !document.getElementById('resultIncomplete').hidden &&
+  document.getElementById('nextDecodedFrame').disabled &&
+  document.getElementById('resultCanvas').getAttribute('aria-label').includes('第 2 张');
+app.setDecodedFrames([{ ...firstBatchResult, startSec: 3661.2, endSec: 3723.4 }]);
+const hourRangeFormatting = document.getElementById('resultAudioRange').textContent === '1:01:01.2 - 1:02:03.4';
+app.setDecodedFrames([firstBatchResult]);
+const singleFrameHidesPagination = document.getElementById('resultPagination').hidden &&
+  !document.getElementById('resultFrameInfo').hidden &&
+  document.getElementById('resultAudioRange').textContent === '00:12.3 - 00:31.8';
 app.resetDecodedResult();
 const decodedResultResets = document.getElementById('resultCanvas').width === 320 &&
   document.getElementById('resultCanvas').height === 256 &&
@@ -219,8 +253,9 @@ const centeredProjectLinks = [document, encoderDom].every(doc => {
   const footer = doc.querySelector('.radio-footer');
   const links = [...footer.querySelectorAll('nav a')];
   return !footer.querySelector('.deerflow-mark') && footer.children.length === 1 &&
-    links.length === 2 && links[0].textContent.trim() === '💻 SOURCE' &&
-    links[1].textContent.trim() === '📄 LICENSE';
+    links.length === 2 && links[0].textContent.trim() === 'SOURCE' &&
+    links[1].textContent.trim() === 'LICENSE' &&
+    links[0].querySelector('.github-icon') && links[1].querySelector('.license-icon');
 });
 const checks = {
   'single 43-mode selector': oneModeSelector && selects[0].options.length === 43,
@@ -246,6 +281,9 @@ const checks = {
   'offline decoder progress remains visible and reports ARIA state': offlineProgressStartsIdle &&
     offlineProgressScans && offlineProgressAdvances && offlineProgressCompletes && offlineProgressReturnsIdle,
   'decoded image can be manually reset': decodedResultEnablesReset && decodedResultResets,
+  'multi-frame results paginate with absolute time and partial state': paginationStartsAtFirst && paginationShowsPartialSecond,
+  'decoded audio ranges switch to hour formatting': hourRangeFormatting,
+  'single decoded frame keeps time and hides pagination': singleFrameHidesPagination,
   'decoded image metadata is removed from P2': decodedMetadataRemoved,
   'ROWS telemetry is removed from P1': rowsTelemetryRemoved,
   'encoder has a separate page shell': encoderIsSeparate,
