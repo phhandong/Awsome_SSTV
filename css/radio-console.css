@@ -1237,8 +1237,9 @@ body[data-page="encoder"] .btn.accent { color: #03100c; background: var(--accent
 /* Footer */
 .radio-footer {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: 1fr;
   align-items: center;
+  justify-items: center;
   gap: 20px;
   width: min(1180px, calc(100% - 40px));
   margin: 0 auto;
@@ -1252,10 +1253,9 @@ body[data-page="encoder"] .btn.accent { color: #03100c; background: var(--accent
 }
 
 .radio-footer::before { display: none; }
-.radio-footer nav { display: flex; gap: 15px; }
+.radio-footer nav { display: flex; justify-self: center; gap: 15px; }
 .radio-footer a { color: var(--text-dim); text-decoration: none; transition: color var(--transition); }
 .radio-footer a:hover { color: var(--accent); }
-.deerflow-mark { justify-self: end; opacity: 0.58; font-size: 8px; }
 
 .toast {
   border-radius: 2px;
@@ -1294,7 +1294,6 @@ body[data-page="encoder"] .btn.accent { color: #03100c; background: var(--accent
 .receiver-telemetry small,
 .result-heading .label > span,
 .console-scope .label > span,
-.deerflow-mark { font-size: 10px; }
 
 .module-label b,
 .result-heading .label,
@@ -1380,8 +1379,7 @@ body[data-page="encoder"] .btn.accent { color: #03100c; background: var(--accent
   .tx-actions.secondary { grid-template-columns: 1fr; }
   .compare.radio-panel { padding-right: 16px; padding-left: 16px; }
   .compare.radio-panel .panel-heading { margin-right: -16px; margin-left: -16px; }
-  .radio-footer { grid-template-columns: 1fr; justify-items: start; width: calc(100% - 24px); gap: 11px; }
-  .deerflow-mark { justify-self: start; }
+  .radio-footer { grid-template-columns: 1fr; justify-items: center; width: calc(100% - 24px); gap: 11px; }
 }
 
 @media (max-width: 420px) {

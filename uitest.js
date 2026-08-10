@@ -215,8 +215,13 @@ const frequencyReadoutsRemoved = [document, encoderDom].every(doc => !doc.queryS
 const decodedMetadataRemoved = !document.getElementById('resultMeta') && !document.querySelector('.result-heading .meta');
 const rowsTelemetryRemoved = !document.getElementById('receiverRows') &&
   ![...document.querySelectorAll('.receiver-telemetry small')].some(label => label.textContent === 'ROWS');
-const deerflowCredit = [document, encoderDom].every(doc =>
-  doc.querySelector('.deerflow-mark')?.getAttribute('href') === 'https://deerflow.tech');
+const centeredProjectLinks = [document, encoderDom].every(doc => {
+  const footer = doc.querySelector('.radio-footer');
+  const links = [...footer.querySelectorAll('nav a')];
+  return !footer.querySelector('.deerflow-mark') && footer.children.length === 1 &&
+    links.length === 2 && links[0].textContent.trim() === '💻 SOURCE' &&
+    links[1].textContent.trim() === '📄 LICENSE';
+});
 const checks = {
   'single 43-mode selector': oneModeSelector && selects[0].options.length === 43,
   'priority mode order': priorityOrder,
@@ -247,7 +252,7 @@ const checks = {
   'encoder TX mode lives in collapsed floating settings': encoderSettingsCollapsed,
   'decoder workspace separates controls and output': decoderWorkspaceStructured,
   'frequency readout annotations are removed from both pages': frequencyReadoutsRemoved,
-  'design credit is present on both pages': deerflowCredit,
+  'project links are the only footer content': centeredProjectLinks,
   'application initializes without errors': errors.length === 0,
 };
 

@@ -67,7 +67,15 @@ async function verifyViewport(name, viewport) {
     },
     hasEncoder: !!document.getElementById('encodeBtn'),
     meterCells: document.querySelectorAll('#receiverMeter .signal-cell').length,
-    deerflow: document.querySelector('.deerflow-mark')?.href,
+    footer: {
+      childCount: document.querySelector('.radio-footer')?.children.length,
+      links: [...document.querySelectorAll('.radio-footer nav a')].map(link => link.textContent.trim()),
+      navCenter: (() => {
+        const footer = document.querySelector('.radio-footer').getBoundingClientRect();
+        const nav = document.querySelector('.radio-footer nav').getBoundingClientRect();
+        return Math.abs((nav.left + nav.right) / 2 - (footer.left + footer.right) / 2);
+      })(),
+    },
     frequencyReadouts: document.querySelectorAll('.frequency-readout').length,
     decodedMetadata: document.querySelectorAll('#resultMeta, .result-heading .meta').length,
     rowsTelemetry: document.querySelectorAll('#receiverRows').length,
@@ -118,8 +126,9 @@ async function verifyViewport(name, viewport) {
       !decoderShell.persistentControls.playDisabled) {
     throw new Error(`${name}: permanent progress/player state or fast decode label is invalid ${JSON.stringify(decoderShell.persistentControls)}`);
   }
-  if (decoderShell.meterCells !== 12 || decoderShell.deerflow !== 'https://deerflow.tech/') {
-    throw new Error(`${name}: signal meter or design credit is missing`);
+  if (decoderShell.meterCells !== 12 || decoderShell.footer.childCount !== 1 ||
+      decoderShell.footer.links.join('|') !== '💻 SOURCE|📄 LICENSE' || decoderShell.footer.navCenter > 1) {
+    throw new Error(`${name}: signal meter or centered footer links are invalid`);
   }
   if (decoderShell.frequencyReadouts !== 0 || decoderShell.decodedMetadata !== 0 ||
       decoderShell.rowsTelemetry !== 0 || !decoderShell.workspace.sameParent) {
