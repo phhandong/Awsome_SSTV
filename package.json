@@ -23,7 +23,7 @@
   "license": "MIT",
   "devDependencies": {
     "jpeg-js": "^0.4.4",
-    "jsdom": "^29.1.1",
+    "jsdom": "^30.0.1",
     "mpg123-decoder": "^1.0.3",
     "playwright-core": "^1.62.1",
     "pngjs": "^7.0.0"
