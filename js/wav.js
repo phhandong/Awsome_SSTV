@@ -2,11 +2,39 @@
 // 编码:44100Hz / 16-bit / mono(最小实现)
 // 解码:支持 8/16/24/32-bit、单/立体声(取左声道),返回原始采样率由调用方重采样
 
+export const WAV_LIMITS = Object.freeze({
+  minSampleRate: 8000,
+  maxSampleRate: 192000,
+  maxChannels: 8,
+  maxFrames: 50 * 1024 * 1024,
+  maxDurationSeconds: 30 * 60,
+});
+
+function checkedByteLength(samples) {
+  if (!samples || !Number.isSafeInteger(samples.length) || samples.length < 0) {
+    throw new Error('WAV 样本长度无效');
+  }
+  if (samples.length > WAV_LIMITS.maxFrames) {
+    throw new Error('WAV 样本数超出安全上限');
+  }
+  const dataLen = samples.length * 2;
+  const byteLength = 44 + dataLen;
+  if (!Number.isSafeInteger(dataLen) || dataLen > 0xffffffff ||
+      !Number.isSafeInteger(byteLength) || byteLength > 0xffffffff) {
+    throw new Error('WAV 数据过大');
+  }
+  return { dataLen, byteLength };
+}
+
 export function encodeWAV(samples, sampleRate = 44100) {
   // samples: Float32Array,范围 -1..1
+  if (!Number.isSafeInteger(sampleRate) ||
+      sampleRate < WAV_LIMITS.minSampleRate || sampleRate > WAV_LIMITS.maxSampleRate) {
+    throw new Error('WAV 采样率无效');
+  }
   const numSamples = samples.length;
-  const dataLen = numSamples * 2;  // 16-bit
-  const buffer = new ArrayBuffer(44 + dataLen);
+  const { dataLen, byteLength } = checkedByteLength(samples);
+  const buffer = new ArrayBuffer(byteLength);
   const view = new DataView(buffer);
 
   writeString(view, 0, 'RIFF');
@@ -33,7 +61,8 @@ export function encodeWAV(samples, sampleRate = 44100) {
   return buffer;
 }
 
-export function decodeWAV(buf) {
+export function decodeWAV(buf, limits = WAV_LIMITS) {
+  limits = { ...WAV_LIMITS, ...limits };
   if (!(buf instanceof ArrayBuffer) || buf.byteLength < 12) {
     throw new Error('WAV 文件过短');
   }
@@ -51,7 +80,9 @@ export function decodeWAV(buf) {
     const id = readString(view, offset);
     const size = view.getUint32(offset + 4, true);
     const chunkEnd = offset + 8 + size;
-    if (chunkEnd > buf.byteLength) throw new Error(`WAV ${id} chunk 越界`);
+    if (!Number.isSafeInteger(chunkEnd) || chunkEnd > buf.byteLength) {
+      throw new Error(`WAV ${id} chunk 越界`);
+    }
     if (id === 'fmt ') {
       if (size < 16) throw new Error('WAV fmt chunk 过短');
       // 字段相对 chunk 数据起始(offset+8):audioFormat=0, channels=2, sampleRate=4, bits=14
@@ -64,11 +95,16 @@ export function decodeWAV(buf) {
       dataOffset = offset + 8;
       dataLen = size;
     }
-    offset += 8 + size + (size & 1);  // 偶对齐
+    const nextOffset = chunkEnd + (size & 1);
+    if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset) throw new Error('WAV chunk 偏移无效');
+    offset = nextOffset;  // 偶对齐
   }
   if (!fmtFound) throw new Error('WAV 无 fmt chunk');
   if (dataOffset < 0) throw new Error('WAV 无 data chunk');
-  if (channels < 1 || sampleRate < 1) throw new Error('WAV 声道数或采样率无效');
+  if (channels < 1 || channels > limits.maxChannels ||
+      sampleRate < limits.minSampleRate || sampleRate > limits.maxSampleRate) {
+    throw new Error('WAV 声道数或采样率超出安全范围');
+  }
   const pcmBits = [8, 16, 24, 32];
   const supported = (audioFormat === 1 && pcmBits.includes(bitsPerSample)) ||
     (audioFormat === 3 && bitsPerSample === 32);
@@ -77,6 +113,13 @@ export function decodeWAV(buf) {
   const bytesPerSample = bitsPerSample / 8;
   const frameLen = bytesPerSample * channels;
   const numFrames = Math.floor(dataLen / frameLen);
+  if (!Number.isSafeInteger(frameLen) || frameLen < 1 ||
+      !Number.isSafeInteger(numFrames) || numFrames < 1 || numFrames > limits.maxFrames) {
+    throw new Error('WAV 样本数超出安全上限');
+  }
+  if (!Number.isFinite(numFrames / sampleRate) || numFrames / sampleRate > limits.maxDurationSeconds) {
+    throw new Error('WAV 时长超出安全上限');
+  }
   const samples = new Float32Array(numFrames);
 
   for (let i = 0; i < numFrames; i++) {

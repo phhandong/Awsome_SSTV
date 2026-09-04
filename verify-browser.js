@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { mkdir, readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, isAbsolute, join, normalize, relative as pathRelative, sep } from 'node:path';
 import { chromium } from 'playwright-core';
 
 const ROOT = process.cwd();
@@ -12,12 +12,29 @@ const mime = new Map([
   ['.wav', 'audio/wav'], ['.mp3', 'audio/mpeg'],
 ]);
 
+function resolveStaticFile(pathname) {
+  const requestPath = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
+  const file = normalize(join(ROOT, requestPath));
+  const rootRelative = pathRelative(ROOT, file);
+  if (rootRelative === '..' || rootRelative.startsWith(`..${sep}`) || isAbsolute(rootRelative)) {
+    throw new Error('invalid path');
+  }
+  return file;
+}
+
+for (const unsafePath of ['/../outside.txt', '/..\\outside.txt']) {
+  try {
+    resolveStaticFile(unsafePath);
+    throw new Error(`static path traversal was accepted: ${unsafePath}`);
+  } catch (error) {
+    if (error.message !== 'invalid path') throw error;
+  }
+}
+
 const server = createServer(async (request, response) => {
   try {
     const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
-    const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/, '');
-    const file = normalize(join(ROOT, relative));
-    if (!file.startsWith(ROOT)) throw new Error('invalid path');
+    const file = resolveStaticFile(pathname);
     response.setHeader('Content-Type', mime.get(extname(file)) || 'application/octet-stream');
     response.end(await readFile(file));
   } catch (_) {
@@ -133,7 +150,7 @@ async function verifyViewport(name, viewport) {
       decoderShell.decodeMode.oldButtons !== 0 || decoderShell.hasEncoder) {
     throw new Error(`${name}: decoder does not expose the consolidated offline command`);
   }
-  if (decoderShell.decodeMode.label !== '离线解码' || decoderShell.decodeMode.fastChecked ||
+  if (decoderShell.decodeMode.label !== '播放并实时解码' || decoderShell.decodeMode.fastChecked ||
       !decoderShell.persistentControls.progressVisible || !decoderShell.persistentControls.progressIdle ||
       !decoderShell.persistentControls.progressMerged || decoderShell.persistentControls.progressValue !== '0' ||
       !decoderShell.persistentControls.playerVisible || !decoderShell.persistentControls.playerIdle ||
@@ -211,7 +228,7 @@ async function verifyViewport(name, viewport) {
       receiverContrast.signalBorder === receiverContrast.panel || receiverContrast.progressBorder === receiverContrast.panel ||
       receiverContrast.playhead !== 'rgb(59, 130, 246)' || receiverContrast.playheadMarker !== 'rgb(59, 130, 246)' ||
       receiverContrast.footerBackground !== 'rgba(0, 0, 0, 0)' ||
-      receiverContrast.githubIconColor !== 'rgb(16, 32, 27)') {
+      receiverContrast.githubIconColor !== 'rgb(73, 98, 94)') {
     throw new Error(`${name}: receiver contrast or blue playhead styling is invalid ${JSON.stringify(receiverContrast)}`);
   }
   const telemetryLayout = await page.evaluate(() => {
@@ -238,9 +255,9 @@ async function verifyViewport(name, viewport) {
 
   await page.click('#rxSettingsToggle');
   await page.waitForFunction(() => document.getElementById('rxSettingsPanel').getAttribute('aria-hidden') === 'false');
+  await page.uncheck('#autoReceive');
   await page.click('#rxSettingsPanel .custom-select-trigger');
   await page.click('#rxSettingsPanel .custom-select-option[data-value="12"]');
-  await page.uncheck('#autoReceive');
   const receiveOptions = await page.evaluate(() => import('./js/app.js').then(app => app.readReceiveOptions()));
   if (receiveOptions.mode !== 12 || 'autoSync' in receiveOptions) {
     throw new Error(`${name}: visible receiver settings did not update manual receive mode`);
@@ -328,10 +345,69 @@ async function verifyViewport(name, viewport) {
     const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
     let sum = 0;
     for (let i = 0; i < pixels.length; i += 4) sum += pixels[i] + pixels[i + 1] + pixels[i + 2];
+
+    let frameStarts = 0;
+    let patches = 0;
+    let firstPatchRows = null;
+    let livePixelSum = 0;
+    let liveSaveDisabled = false;
+    let liveMarked = false;
+    const finalPromise = new Promise((resolve, reject) => {
+      decoder.addEventListener('frame-start', ({ detail }) => {
+        frameStarts++;
+        app.beginReceiverFrame(detail);
+      });
+      decoder.addEventListener('frame-patch', ({ detail }) => {
+        patches++;
+        firstPatchRows ??= detail.rows;
+        app.applyReceiverFramePatch(detail);
+        if (patches === 1) {
+          const liveCanvas = document.getElementById('resultCanvas');
+          const livePixels = liveCanvas.getContext('2d')
+            .getImageData(0, 0, liveCanvas.width, liveCanvas.height).data;
+          for (let offset = 0; offset < livePixels.length; offset += 4) {
+            livePixelSum += livePixels[offset] + livePixels[offset + 1] + livePixels[offset + 2];
+          }
+          liveSaveDisabled = document.getElementById('saveImageBtn').disabled;
+          liveMarked = document.getElementById('decoderOutput').classList.contains('is-live-preview');
+        }
+      });
+      decoder.addEventListener('frame', ({ detail }) => {
+        if (detail.partial) return;
+        app.renderReceiverFrame(detail.result, { append: true });
+        resolve(detail.result);
+      });
+      decoder.addEventListener('error', ({ detail }) => reject(new Error(detail.message)));
+    });
+    decoder.reset({ dsp: { engine: 'mmsstv', bpf: true }, emitFrames: true });
+    const chunkSize = Math.floor(11025 / 4);
+    for (let offset = 0; offset < pcm.length; offset += chunkSize) {
+      decoder.push(pcm.subarray(offset, Math.min(pcm.length, offset + chunkSize)), 11025);
+    }
+    decoder.end();
+    await finalPromise;
+    const liveFinalized = !document.getElementById('decoderOutput').classList.contains('is-live-preview') &&
+      !document.getElementById('saveImageBtn').disabled;
     decoder.destroy();
-    return { mode: result.mode.name, width: result.width, height: result.height, pixelSum: sum };
+    return {
+      mode: result.mode.name,
+      width: result.width,
+      height: result.height,
+      pixelSum: sum,
+      frameStarts,
+      patches,
+      firstPatchRows,
+      livePixelSum,
+      liveSaveDisabled,
+      liveMarked,
+      liveFinalized,
+    };
   });
-  if (decoded.mode !== 'B/W 8' || decoded.pixelSum <= 0) throw new Error(`${name}: Worker/canvas decode failed`);
+  if (decoded.mode !== 'B/W 8' || decoded.pixelSum <= 0 || decoded.frameStarts !== 1 ||
+      decoded.patches <= 4 || decoded.firstPatchRows >= 24 || decoded.livePixelSum <= 0 ||
+      !decoded.liveSaveDisabled || !decoded.liveMarked || !decoded.liveFinalized) {
+    throw new Error(`${name}: Worker/progressive canvas decode failed ${JSON.stringify(decoded)}`);
+  }
 
   const batchDecoded = await page.evaluate(async () => {
     const [{ encode }, { getMode }, { WebSSTVDecoder }, app] = await Promise.all([
@@ -482,7 +558,7 @@ async function verifyViewport(name, viewport) {
     const signatureOk = format === 'png'
       ? bytes.length > 8 && bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
       : bytes.length > 54 && bytes[0] === 0x42 && bytes[1] === 0x4d && bytes.readUInt16LE(28) === 24;
-    if (!signatureOk || !download.suggestedFilename().includes('_002_') ||
+    if (!signatureOk || !download.suggestedFilename().includes('_002_20.9-29.6') ||
         !download.suggestedFilename().endsWith(`.${format}`)) {
       throw new Error(`${name}: invalid ${format.toUpperCase()} download`);
     }
@@ -657,16 +733,181 @@ async function verifyViewport(name, viewport) {
   }
 
   await page.click('#micReceiveBtn');
-  await page.waitForFunction(() => ['搜索信号', '已锁定'].includes(document.getElementById('receiverStatus').textContent));
+  await page.waitForFunction(() => {
+    const status = document.getElementById('receiverStatus').textContent;
+    return status.startsWith('搜索信号') || status.startsWith('已锁定');
+  });
   await page.waitForFunction(() => document.getElementById('micReceiveBtn').getAttribute('aria-pressed') === 'true');
-  await page.click('#micReceiveBtn');
+  await page.waitForTimeout(100);
+  await page.click('#navToggle');
+  await page.waitForFunction(() => document.getElementById('navToggle').getAttribute('aria-expanded') === 'true');
+  await page.evaluate(async () => {
+    const app = await import('./js/app.js');
+    app.scheduleReceiveCompletionPrompt({
+      frameId: 7001,
+      mode: { name: 'Robot 36' },
+      rows: 240,
+      complete: true,
+      completionRatio: 1,
+      reason: 'nominal-tail',
+    }, 0);
+  });
+  await page.waitForFunction(() =>
+    document.getElementById('receiveCompleteDialog').getAttribute('aria-hidden') === 'false'
+  );
+  const receiveCompleteDialog = await page.evaluate(() => {
+    const dialog = document.getElementById('receiveCompleteDialog');
+    return {
+      modal: dialog.getAttribute('aria-modal'),
+      focused: document.activeElement.id,
+      mode: document.getElementById('receiveCompleteMode').textContent,
+      micActive: document.getElementById('micReceiveBtn').getAttribute('aria-pressed'),
+      recordingDialogHidden: document.getElementById('recordingSaveDialog').hidden,
+      navClosed: document.getElementById('navToggle').getAttribute('aria-expanded') === 'false',
+      promptInert: dialog.hasAttribute('inert'),
+      backgroundInert: [...document.body.children]
+        .filter(element => element !== dialog)
+        .every(element => element.hasAttribute('inert')),
+    };
+  });
+  if (receiveCompleteDialog.modal !== 'true' ||
+      receiveCompleteDialog.focused !== 'receiveCompleteContinue' ||
+      !receiveCompleteDialog.mode.includes('Robot 36') ||
+      receiveCompleteDialog.micActive !== 'true' ||
+      !receiveCompleteDialog.recordingDialogHidden ||
+      !receiveCompleteDialog.navClosed || receiveCompleteDialog.promptInert ||
+      !receiveCompleteDialog.backgroundInert) {
+    throw new Error(`${name}: receive completion dialog is invalid ${JSON.stringify(receiveCompleteDialog)}`);
+  }
+  await page.click('#receiveCompleteContinue');
+  const continuedReception = await page.evaluate(() => ({
+    completionHidden: document.getElementById('receiveCompleteDialog').hidden,
+    micActive: document.getElementById('micReceiveBtn').getAttribute('aria-pressed'),
+    recordingDialogHidden: document.getElementById('recordingSaveDialog').hidden,
+  }));
+  if (!continuedReception.completionHidden || continuedReception.micActive !== 'true' ||
+      !continuedReception.recordingDialogHidden) {
+    throw new Error(`${name}: continuing after a complete frame stopped reception ${JSON.stringify(continuedReception)}`);
+  }
+
+  // A following frame/lock cancels a queued prompt. Exercise the public
+  // cancellation boundary without fabricating an internal Worker event.
+  await page.evaluate(async () => {
+    const app = await import('./js/app.js');
+    app.scheduleReceiveCompletionPrompt({
+      frameId: 7002,
+      mode: { name: 'B/W 8' },
+      rows: 120,
+      complete: true,
+      completionRatio: 1,
+      reason: 'nominal-tail',
+    }, 30);
+    app.cancelReceiveCompletionPrompt();
+  });
+  await page.waitForTimeout(60);
+  if (!await page.locator('#receiveCompleteDialog').isHidden() ||
+      await page.getAttribute('#micReceiveBtn', 'aria-pressed') !== 'true') {
+    throw new Error(`${name}: cancelled completion prompt reopened or stopped reception`);
+  }
+
+  await page.evaluate(async () => {
+    const app = await import('./js/app.js');
+    app.scheduleReceiveCompletionPrompt({
+      frameId: 7003,
+      mode: { name: 'PD120' },
+      rows: 496,
+      complete: true,
+      completionRatio: 1,
+      reason: 'nominal-tail',
+    }, 0);
+  });
+  await page.waitForFunction(() =>
+    document.getElementById('receiveCompleteDialog').getAttribute('aria-hidden') === 'false'
+  );
+  await page.click('#receiveCompleteStop');
+  await page.waitForFunction(() => document.getElementById('recordingSaveDialog').getAttribute('aria-hidden') === 'false');
+  const completionStopState = await page.evaluate(() => ({
+    completionHidden: document.getElementById('receiveCompleteDialog').hidden,
+    micActive: document.getElementById('micReceiveBtn').getAttribute('aria-pressed'),
+    recordingDialogCount: document.querySelectorAll('#recordingSaveDialog:not([hidden])').length,
+  }));
+  if (!completionStopState.completionHidden || completionStopState.micActive !== 'false' ||
+      completionStopState.recordingDialogCount !== 1) {
+    throw new Error(`${name}: ending from completion prompt did not stop exactly once ${JSON.stringify(completionStopState)}`);
+  }
+  const recordingDialog = await page.evaluate(() => {
+    const dialog = document.getElementById('recordingSaveDialog');
+    const card = dialog.querySelector('.recording-save-card');
+    return {
+      modal: dialog.getAttribute('aria-modal'),
+      duration: document.getElementById('recordingSaveDuration').textContent,
+      focused: document.activeElement.id,
+      cardWidth: card.getBoundingClientRect().width,
+      background: getComputedStyle(card).backgroundImage,
+      backgroundInert: [...document.body.children]
+        .filter(element => element !== dialog)
+        .every(element => element.hasAttribute('inert')),
+    };
+  });
+  if (recordingDialog.modal !== 'true' || !/秒$/.test(recordingDialog.duration) ||
+      recordingDialog.focused !== 'recordingSaveYes' || !recordingDialog.backgroundInert ||
+      recordingDialog.cardWidth <= 250 ||
+      recordingDialog.background === 'none') {
+    throw new Error(`${name}: recording confirmation dialog is invalid ${JSON.stringify(recordingDialog)}`);
+  }
+  await page.click('#recordingSaveNo');
+  const retainedRecording = await page.evaluate(() => ({
+    dialogHidden: document.getElementById('recordingSaveDialog').hidden,
+    downloadHidden: document.getElementById('downloadRecordingBtn').hidden,
+    downloadDisabled: document.getElementById('downloadRecordingBtn').disabled,
+    resetDisabled: document.getElementById('resetDecodedBtn').disabled,
+    focused: document.activeElement.id,
+  }));
+  if (!retainedRecording.dialogHidden || retainedRecording.downloadHidden ||
+      retainedRecording.downloadDisabled || retainedRecording.resetDisabled ||
+      retainedRecording.focused !== 'micReceiveBtn') {
+    throw new Error(`${name}: declined recording was not retained ${JSON.stringify(retainedRecording)}`);
+  }
+  const recordingDownloadPromise = page.waitForEvent('download');
+  await page.click('#downloadRecordingBtn');
+  const recordingDownload = await recordingDownloadPromise;
+  const recordingBytes = await readFile(await recordingDownload.path());
+  if (!/^sstv_recording_\d{8}T\d{6}Z\.wav$/.test(recordingDownload.suggestedFilename()) ||
+      recordingBytes.length <= 44 || recordingBytes.subarray(0, 4).toString() !== 'RIFF' ||
+      recordingBytes.subarray(8, 12).toString() !== 'WAVE') {
+    throw new Error(`${name}: microphone recording was not saved as a valid WAV`);
+  }
+  await page.click('#resetDecodedBtn');
+  if (!await page.locator('#downloadRecordingBtn').isHidden() ||
+      await page.isEnabled('#downloadRecordingBtn') || await page.isEnabled('#resetDecodedBtn')) {
+    throw new Error(`${name}: clearing results did not discard retained recording`);
+  }
   await page.waitForFunction(() => document.getElementById('receiverStatus').textContent === '已停止');
   if (await page.getAttribute('#micReceiveBtn', 'aria-pressed') !== 'false') throw new Error(`${name}: receive command did not return to its start state`);
   if (await page.getAttribute('#receiverMeter', 'aria-valuenow') !== null) throw new Error(`${name}: SNR meter did not reset after stop`);
 
+  if (name === 'desktop') {
+    await page.click('#micReceiveBtn');
+    await page.waitForFunction(() => document.getElementById('micReceiveBtn').getAttribute('aria-pressed') === 'true');
+    await page.waitForTimeout(100);
+    await page.click('#micReceiveBtn');
+    await page.waitForFunction(() => document.getElementById('recordingSaveDialog').getAttribute('aria-hidden') === 'false');
+    const immediateDownloadPromise = page.waitForEvent('download');
+    await page.click('#recordingSaveYes');
+    const immediateDownload = await immediateDownloadPromise;
+    const immediateBytes = await readFile(await immediateDownload.path());
+    if (immediateBytes.length <= 44 || immediateBytes.subarray(0, 4).toString() !== 'RIFF' ||
+        !await page.locator('#downloadRecordingBtn').isHidden()) {
+      throw new Error('desktop: accepting the recording dialog did not download and release the WAV');
+    }
+  }
+
   const layout = await page.evaluate(() => ({
     overflow: document.documentElement.scrollWidth - window.innerWidth,
-    clippedButtons: [...document.querySelectorAll('button')].filter(button => button.scrollWidth > button.clientWidth + 1).map(button => button.id),
+    clippedButtons: [...document.querySelectorAll('button:not([hidden])')]
+      .filter(button => button.getClientRects().length > 0)
+      .filter(button => button.scrollWidth > button.clientWidth + 1)
+      .map(button => button.id || `${button.className}:${button.textContent.trim()}`),
     canvas: { width: document.getElementById('resultCanvas').clientWidth, height: document.getElementById('resultCanvas').clientHeight },
   }));
   if (layout.overflow > 1) throw new Error(`${name}: horizontal overflow ${layout.overflow}px`);

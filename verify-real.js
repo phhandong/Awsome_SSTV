@@ -136,9 +136,10 @@ for (const testCase of CASES) {
 
 // The final low-SNR seconds used to inject hundreds of false 1200-Hz pulse
 // candidates. A global Robot clock refit then rewrote even the already-good
-// top of the image when the complete file replaced the 38.3-second partial
-// frame. Completed rows must be byte-identical, not merely similar after
-// block averaging, while the receiver continues through the noisy tail.
+// top of the image when the complete file replaced the 38.3-second prefix.
+// The authoritative full decode must keep those rows byte-identical. The live
+// patch stream is provisional, but later audio must not rewrite an already
+// committed strip with different bytes.
 {
   const { samples, sampleRate } = await decodeMp3Mono('./asset/ROBOT36_test.mp3');
   const dsp = { engine: 'mmsstv', afc: true, lms: true, bpf: true };
@@ -169,32 +170,76 @@ for (const testCase of CASES) {
   }
   const stableMae = absoluteDifference / (stableHeight * complete.width * 3);
   const receiver = new SSTVReceiver({ dsp, emitFrames: true, renderEveryRows: 40 });
-  const partialFrames = [];
+  const frameStarts = [];
+  const framePatches = [];
+  const finalFrames = [];
+  receiver.on('frame-start', event => { frameStarts.push(event); });
+  receiver.on('frame-patch', event => {
+    framePatches.push({
+      ...event,
+      pixels: event.pixels instanceof Uint8ClampedArray ? event.pixels.slice() : event.pixels,
+    });
+  });
   receiver.on('frame', event => {
-    if (event.partial) partialFrames.push({ rows: event.rows, pixels: event.result.pixels.slice() });
+    if (!event.partial) finalFrames.push(event.result);
   });
   const chunkSize = Math.floor(sampleRate / 2);
   for (let offset = 0; offset < samples.length; offset += chunkSize) {
     receiver.push(samples.subarray(offset, Math.min(samples.length, offset + chunkSize)), sampleRate);
   }
   const streamed = receiver.end();
-  let streamChangedChannels = 0;
-  for (const frame of partialFrames) {
-    const completedRows = Math.max(0, Math.min(frame.rows - 2, streamed.height));
-    const completedBytes = completedRows * streamed.width * 4;
-    for (let offset = 0; offset < completedBytes; offset += 4) {
-      for (let channel = 0; channel < 3; channel++) {
-        if (frame.pixels[offset + channel] !== streamed.pixels[offset + channel]) streamChangedChannels++;
+  const patchCanvas = new Uint8ClampedArray(streamed.width * streamed.height * 4);
+  const committedRows = new Uint8Array(streamed.height);
+  let patchContractValid = frameStarts.length === 1 &&
+    frameStarts[0].mode === streamed.mode &&
+    frameStarts[0].width === streamed.width &&
+    frameStarts[0].height === streamed.height &&
+    finalFrames.length === 1 && finalFrames[0] === streamed;
+  let patchChangedChannels = 0;
+  let lastPatchRows = 0;
+  for (const patch of framePatches) {
+    const valid = patch.frameId === frameStarts[0]?.frameId && patch.partial === true &&
+      Number.isSafeInteger(patch.y) && patch.y >= 0 &&
+      Number.isSafeInteger(patch.rowCount) && patch.rowCount > 0 &&
+      patch.y + patch.rowCount <= streamed.height &&
+      patch.totalRows === streamed.height && patch.rows >= patch.y + patch.rowCount &&
+      patch.rows >= lastPatchRows && patch.pixels instanceof Uint8ClampedArray &&
+      patch.pixels.length === streamed.width * patch.rowCount * 4;
+    patchContractValid &&= valid;
+    if (!valid) continue;
+    for (let localRow = 0; localRow < patch.rowCount; localRow++) {
+      const row = patch.y + localRow;
+      const targetStart = row * streamed.width * 4;
+      const sourceStart = localRow * streamed.width * 4;
+      if (committedRows[row]) {
+        for (let x = 0; x < streamed.width; x++) {
+          const target = targetStart + x * 4;
+          const source = sourceStart + x * 4;
+          for (let channel = 0; channel < 3; channel++) {
+            if (patchCanvas[target + channel] !== patch.pixels[source + channel]) {
+              patchChangedChannels++;
+            }
+          }
+        }
+      } else {
+        patchCanvas.set(
+          patch.pixels.subarray(sourceStart, sourceStart + streamed.width * 4),
+          targetStart
+        );
+        committedRows[row] = 1;
       }
     }
+    lastPatchRows = patch.rows;
   }
   const passed = changedChannels === 0 && stableMae === 0 &&
-    partialFrames.length >= 4 && streamChangedChannels === 0 &&
+    framePatches.length >= 4 && lastPatchRows >= stableHeight &&
+    patchContractValid && patchChangedChannels === 0 &&
     stableLuma >= 0.99 && stableRgb.every(value => value >= 0.99) && fullLuma >= 0.90;
   console.log(`  ${passed ? 'PASS' : 'FAIL'} ROBOT36_test.mp3 tail stability (AFC+LMS+BPF): ` +
     `prefix=${stableLuma.toFixed(6)} rgb=${stableRgb.map(value => value.toFixed(6)).join('/')} ` +
     `changed=${changedChannels} mae=${stableMae.toFixed(6)} ` +
-    `stream=${partialFrames.length}/${streamChangedChannels} full=${fullLuma.toFixed(6)}`);
+    `patches=${framePatches.length}/${patchChangedChannels} rows=${lastPatchRows} ` +
+    `full=${fullLuma.toFixed(6)}`);
   allOk &&= passed;
 }
 

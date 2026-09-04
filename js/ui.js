@@ -14,15 +14,23 @@ export function toast(msg, type = '') {
 
 export function setProgress(id, p) {
   const wrap = document.getElementById(id);
+  const value = Math.max(0, Math.min(1, Number(p) || 0));
   if (p >= 1) {
+    wrap.setAttribute('aria-valuenow', '100');
+    wrap.setAttribute('aria-valuetext', '生成完成，100%');
     wrap.hidden = true;
     return;
   }
   wrap.hidden = false;
+  const percent = Math.round(value * 100);
+  wrap.setAttribute('aria-valuemin', '0');
+  wrap.setAttribute('aria-valuemax', '100');
+  wrap.setAttribute('aria-valuenow', String(percent));
+  wrap.setAttribute('aria-valuetext', `正在生成，${percent}%`);
   const bar = wrap.querySelector('.bar');
   // 使用 requestAnimationFrame 优化性能
   requestAnimationFrame(() => {
-    bar.style.width = (p * 100).toFixed(1) + '%';
+    bar.style.width = (value * 100).toFixed(1) + '%';
   });
 }
 
@@ -32,6 +40,22 @@ export function renderToCanvas(canvas, pixels, width, height) {
   const ctx = canvas.getContext('2d', { alpha: false }); // 性能优化
   const imgData = new ImageData(new Uint8ClampedArray(pixels), width, height);
   ctx.putImageData(imgData, 0, 0);
+}
+
+export function renderCanvasPatch(canvas, pixels, width, height, y, rowCount) {
+  const top = Math.max(0, Math.min(height, Math.floor(Number(y) || 0)));
+  const rows = Math.max(0, Math.min(height - top, Math.floor(Number(rowCount) || 0)));
+  if (!rows || pixels.length !== width * rows * 4) return;
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const context = canvas.getContext('2d', { alpha: false });
+  context.putImageData(
+    new ImageData(new Uint8ClampedArray(pixels), width, rows),
+    0,
+    top
+  );
 }
 
 // 把任意图片元素画到目标 canvas(用于显示原图)

@@ -24,11 +24,25 @@ const state = {
   audioSelection: { start: 0, end: 0 }, // 选中的音频区域
   webDecoder: null,
   micActive: false,
+  micStarting: false,
+  micStopPromise: null,
+  microphoneRecording: null,
+  recordingDialogReturnFocus: null,
+  recordingDialogInertElements: [],
+  receiveCompleteTimer: null,
+  receiveCompleteCandidateKey: null,
+  receiveCompleteLastPromptedKey: null,
+  receiveCompleteDialogReturnFocus: null,
+  receiveCompleteDialogInertElements: [],
+  receiveCompleteDecisionInFlight: false,
+  resultResizeObserver: null,
   realtimeDecode: null,
   offlineDecodeActive: false,
   offlineProgressHideTimer: null,
   decodedFrames: [],
   activeDecodedFrameIndex: -1,
+  receiverFrameCount: 0,
+  receiverPanelProgressBucket: -1,
   decodeGeneration: 0,
 };
 
@@ -41,6 +55,7 @@ const BASEBAND_LOW_MAX_HZ = 1000;
 const BASEBAND_HIGH_MIN_HZ = 2400;
 const SNR_METER_MIN_DB = -10;
 const SNR_METER_MAX_DB = 30;
+const RECEIVE_COMPLETE_PROMPT_DELAY_MS = 1200;
 
 function init() {
   setupNavigation();
@@ -90,13 +105,21 @@ function init() {
   document.getElementById('offlineDecodeBtn')?.addEventListener('click', runOfflineDecode);
   document.getElementById('fastDecodeMode')?.addEventListener('change', updateOfflineDecodeMode);
   document.getElementById('saveImageBtn')?.addEventListener('click', saveDecodedImage);
-  document.getElementById('resetDecodedBtn')?.addEventListener('click', () => resetDecodedResult({ announce: true }));
+  document.getElementById('resetDecodedBtn')?.addEventListener('click', () => resetDecodedResult({ announce: true, clearRecording: true }));
+  document.getElementById('downloadRecordingBtn')?.addEventListener('click', () => {
+    if (!state.microphoneRecording) return;
+    downloadMicrophoneRecording(state.microphoneRecording);
+    ui.toast('接收录音已保存', 'success');
+  });
+  setupReceiveCompletionDialog();
+  setupRecordingSaveDialog();
   document.getElementById('previousDecodedFrame')?.addEventListener('click', () => {
     showDecodedFrame(state.activeDecodedFrameIndex - 1);
   });
   document.getElementById('nextDecodedFrame')?.addEventListener('click', () => {
     showDecodedFrame(state.activeDecodedFrameIndex + 1);
   });
+  setupLiveScanlineResize();
   const imageFormat = document.getElementById('imageFormat');
   if (imageFormat) {
     try { imageFormat.value = localStorage.getItem('sstv.imageFormat') || 'png'; } catch (_) {}
@@ -113,6 +136,10 @@ function init() {
     ? setupBasebandFilter()
     : null;
   setupPageSettings(basebandController);
+  document.getElementById('txChangeModeBtn')?.addEventListener('click', () => {
+    const toggle = document.getElementById('txSettingsToggle');
+    if (toggle?.getAttribute('aria-expanded') !== 'true') toggle?.click();
+  });
 
   if (audioDropzone && typeof Worker !== 'undefined') {
     state.webDecoder = new WebSSTVDecoder();
@@ -152,12 +179,29 @@ function setupNavigation() {
   const drawer = document.getElementById('navDrawer');
   const scrim = document.getElementById('navScrim');
   if (!button || !drawer || !scrim) return;
+  const getFocusable = () => [...drawer.querySelectorAll('a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter(element => !element.hidden && element.getAttribute('aria-hidden') !== 'true');
+  const background = [...document.body.children].filter(element =>
+    element !== button && element !== drawer && element !== scrim
+  );
+  let temporarilyInert = [];
   const setOpen = open => {
     drawer.classList.toggle('is-open', open);
     scrim.hidden = !open;
     button.setAttribute('aria-expanded', String(open));
+    button.setAttribute('aria-label', open ? '关闭导航' : '打开导航');
     drawer.setAttribute('aria-hidden', String(!open));
+    drawer.toggleAttribute('inert', !open);
+    if (open) {
+      temporarilyInert = background.filter(element => !element.hasAttribute('inert'));
+      temporarilyInert.forEach(element => element.setAttribute('inert', ''));
+    } else {
+      temporarilyInert.forEach(element => element.removeAttribute('inert'));
+      temporarilyInert = [];
+    }
     document.body.classList.toggle('nav-open', open);
+    if (open) (drawer.querySelector('[aria-current="page"]') || getFocusable()[0] || drawer).focus();
+    else if (drawer.contains(document.activeElement)) button.focus();
   };
   button.addEventListener('click', () => setOpen(button.getAttribute('aria-expanded') !== 'true'));
   scrim.addEventListener('click', () => setOpen(false));
@@ -166,6 +210,24 @@ function setupNavigation() {
     if (event.key === 'Escape' && button.getAttribute('aria-expanded') === 'true') {
       setOpen(false);
       button.focus();
+    }
+  });
+  drawer.addEventListener('keydown', event => {
+    if (event.key !== 'Tab' || button.getAttribute('aria-expanded') !== 'true') return;
+    const focusable = getFocusable();
+    if (!focusable.length) {
+      event.preventDefault();
+      drawer.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
   setOpen(false);
@@ -221,6 +283,7 @@ function setupDropzoneKeyboard() {
 }
 
 function selectMode(visCode) {
+  const previousMode = state.mode?.visCode;
   state.mode = getMode(visCode);
   const m = state.mode;
   const modeInfo = document.getElementById('modeInfo');
@@ -232,9 +295,26 @@ function selectMode(visCode) {
       `<span>VIS <b>${m.visCode}</b></span>` +
       `<span>行周期 <b>${m.lineDurationMs.toFixed(1)}ms</b></span>`;
   }
+  const currentMode = document.getElementById('txCurrentMode');
+  if (currentMode) currentMode.textContent = `${m.name} · ${m.width}×${m.height}`;
   // 更新源画布尺寸预览
   if (state.sourceImage) drawSourcePreview();
+  if (previousMode != null && previousMode !== state.mode?.visCode) invalidateEncodedOutput();
   updateButtons();
+}
+
+function invalidateEncodedOutput() {
+  state.lastPCM = null;
+  state.lastWAV = null;
+  const audio = document.getElementById('audioPlayer');
+  if (audio) {
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load?.();
+  }
+  if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
+  state.audioUrl = null;
+  updatePlayButton();
 }
 
 function drawSourcePreview() {
@@ -248,6 +328,7 @@ function onImageFile(file) {
   const objectUrl = URL.createObjectURL(file);
   img.onload = () => {
     URL.revokeObjectURL(objectUrl);
+    invalidateEncodedOutput();
     state.sourceImage = img;
     drawSourcePreview();
     updateButtons();
@@ -289,6 +370,7 @@ function useSampleImage() {
 
   const img = new Image();
   img.onload = () => {
+    invalidateEncodedOutput();
     state.sourceImage = img;
     drawSourcePreview();
     updateButtons();
@@ -381,11 +463,23 @@ function enhanceSelect(select) {
   trigger.className = 'custom-select-trigger';
   trigger.setAttribute('aria-haspopup', 'listbox');
   trigger.setAttribute('aria-expanded', 'false');
+  const menuId = `${select.id || 'select'}Menu`;
+  trigger.setAttribute('aria-controls', menuId);
+  select.tabIndex = -1;
 
   const menu = document.createElement('div');
+  menu.id = menuId;
   menu.className = 'custom-select-menu';
   menu.setAttribute('role', 'listbox');
+  menu.setAttribute('aria-label', select.getAttribute('aria-label') || '选择');
   menu.hidden = true;
+
+  const items = () => [...menu.querySelectorAll('[role="option"]')];
+  const focusItem = index => {
+    const options = items();
+    if (!options.length) return;
+    options[(index + options.length) % options.length].focus();
+  };
 
   const sync = () => {
     const option = select.options[select.selectedIndex];
@@ -404,6 +498,7 @@ function enhanceSelect(select) {
     host.classList.remove('is-open');
   };
   const open = () => {
+    if (select.disabled) return;
     sync();
     menu.hidden = false;
     trigger.setAttribute('aria-expanded', 'true');
@@ -416,10 +511,12 @@ function enhanceSelect(select) {
     item.className = 'custom-select-option';
     item.dataset.value = option.value;
     item.setAttribute('role', 'option');
+    item.tabIndex = -1;
     item.textContent = option.textContent;
     item.addEventListener('click', () => {
       select.value = option.value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      const ChangeEvent = select.ownerDocument.defaultView.Event;
+      select.dispatchEvent(new ChangeEvent('change', { bubbles: true }));
       sync();
       close();
     });
@@ -435,10 +532,34 @@ function enhanceSelect(select) {
       trigger.focus();
       return;
     }
-    if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       open();
-      menu.querySelector('.is-selected')?.scrollIntoView({ block: 'nearest' });
+      const selected = menu.querySelector('.is-selected');
+      (selected || items()[event.key === 'ArrowUp' ? items().length - 1 : 0])?.focus();
+      selected?.scrollIntoView?.({ block: 'nearest' });
+    }
+  });
+  menu.addEventListener('keydown', event => {
+    const options = items();
+    const current = options.indexOf(document.activeElement);
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      trigger.focus();
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusItem(current + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      focusItem(event.key === 'Home' ? 0 : options.length - 1);
+    } else if ((event.key === 'Enter' || event.key === ' ') && current >= 0) {
+      event.preventDefault();
+      options[current].click();
+      trigger.focus();
+    } else if (event.key === 'Tab') {
+      close();
     }
   });
   select.addEventListener('change', sync);
@@ -448,6 +569,16 @@ function enhanceSelect(select) {
 
   host.insertBefore(trigger, select);
   host.appendChild(menu);
+  select._enhancedControl = {
+    trigger,
+    menu,
+    setDisabled(disabled) {
+      select.disabled = !!disabled;
+      trigger.disabled = !!disabled;
+      trigger.setAttribute('aria-disabled', String(!!disabled));
+      if (disabled) close();
+    },
+  };
   sync();
 }
 
@@ -551,6 +682,10 @@ function waitForBrowserPaint() {
 // pcm/sr 为待解码音频;起始和结束时间从音频播放器选区读取
 async function onDecode(pcm, sr) {
   if (!pcm || state.isProcessing) return;
+  if (state.micActive || state.micStarting || state.micStopPromise) {
+    ui.toast('请先停止麦克风接收，再开始文件解码', 'error');
+    return;
+  }
   if (state.realtimeDecode) stopRealtimeDecode(true);
   if (pcm === state.uploadedAudio?.samples && !validateRangeInputs()) return;
 
@@ -561,6 +696,8 @@ async function onDecode(pcm, sr) {
   offlineDecodeBtn.classList.add('loading');
   offlineDecodeBtn.setAttribute('aria-busy', 'true');
   document.getElementById('fastDecodeMode').disabled = true;
+  setReceiverStatus('搜索信号', 'active');
+  setReceiverPanelState('SEARCHING', 'searching');
   setOfflineDecodeProgress(null, '正在分析 VIS / 同步');
   await waitForBrowserPaint();
 
@@ -639,13 +776,17 @@ async function onDecode(pcm, sr) {
 function setRealtimeButton(active) {
   const button = document.getElementById('offlineDecodeBtn');
   document.getElementById('offlineDecodeIcon').textContent = active ? '■' : '◉';
-  document.getElementById('offlineDecodeLabel').textContent = active ? '停止解码' : '离线解码';
-  button.setAttribute('aria-label', active ? '停止离线解码' : '离线解码上传的音频');
+  document.getElementById('offlineDecodeLabel').textContent = active ? '停止实时解码' : '播放并实时解码';
+  button.setAttribute('aria-label', active ? '停止播放和实时解码' : '播放音频并实时解码');
   button.classList.toggle('realtime-active', active);
   document.getElementById('fastDecodeMode').disabled = active;
 }
 
 function runOfflineDecode() {
+  if (state.micActive || state.micStarting || state.micStopPromise) {
+    ui.toast('请先停止麦克风接收，再开始文件解码', 'error');
+    return;
+  }
   if (document.getElementById('fastDecodeMode').checked) {
     if (!state.uploadedAudio) return;
     return onDecode(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
@@ -660,16 +801,22 @@ function updateOfflineDecodeMode() {
   const rangeInvalid = ['decodeStartSec', 'decodeEndSec']
     .some(id => document.getElementById(id).getAttribute('aria-invalid') === 'true');
   document.getElementById('offlineDecodeIcon').textContent = fast ? '⚡' : '◉';
-  document.getElementById('offlineDecodeLabel').textContent = fast ? '极速解码' : '离线解码';
-  button.setAttribute('aria-label', fast ? '极速解码上传的音频' : '离线解码上传的音频');
+  document.getElementById('offlineDecodeLabel').textContent = fast ? '极速解码' : '播放并实时解码';
+  button.setAttribute('aria-label', fast ? '极速解码上传的音频' : '播放音频并实时解码，会通过扬声器发声');
+  button.title = fast ? '后台快速处理，不播放音频' : '按实际速度播放音频并实时解码，会通过扬声器发声';
   button.classList.toggle('primary', fast);
   button.classList.toggle('accent', !fast);
-  button.disabled = !state.uploadedAudio || rangeInvalid || (!fast && !state.webDecoder);
+  button.disabled = state.micActive || state.micStarting || !!state.micStopPromise
+    || !state.uploadedAudio || rangeInvalid || (!fast && !state.webDecoder);
 }
 
 async function toggleRealtimeDecode() {
   if (state.realtimeDecode) {
     stopRealtimeDecode(true);
+    return;
+  }
+  if (state.micActive || state.micStarting || state.micStopPromise) {
+    ui.toast('请先停止麦克风接收，再开始实时解码', 'error');
     return;
   }
   if (!state.uploadedAudio || !state.audioPlayer?.duration || state.isProcessing) return;
@@ -691,8 +838,9 @@ async function toggleRealtimeDecode() {
   });
   setRealtimeButton(true);
   setReceiverStatus('实时搜索信号', 'active');
+  setReceiverPanelState('SEARCHING', 'searching');
   setOfflineDecodeProgress(0, '实时解码 · 等待同步');
-  ui.toast('实时解码已开始，正在同步播放音频', 'success');
+  ui.toast('正在播放音频并实时解码，扬声器会发声', 'success');
   try {
     state.audioPlayer.seek(startSec);
     await state.audioPlayer.play();
@@ -703,12 +851,20 @@ async function toggleRealtimeDecode() {
 }
 
 function stopRealtimeDecode(finalize = true) {
+  cancelReceiveCompletionPrompt();
   const realtime = state.realtimeDecode;
   if (!realtime) return;
   state.realtimeDecode = null;
   if (finalize && !realtime.ended) {
     realtime.ended = true;
-    try { state.webDecoder?.end(); } catch (error) { console.warn('Realtime decoder:', error); }
+    try {
+      const finalizePromise = state.webDecoder?.end();
+      if (finalizePromise?.catch) void finalizePromise.catch(error => console.warn('Realtime decoder:', error));
+    } catch (error) {
+      console.warn('Realtime decoder:', error);
+    }
+  } else if (!finalize) {
+    try { state.webDecoder?.cancelReceiver?.(); } catch (error) { console.warn('Realtime decoder cancel:', error); }
   }
   if (state.audioPlayer?.isPlaying) state.audioPlayer.pause();
   setRealtimeButton(false);
@@ -719,40 +875,65 @@ function stopRealtimeDecode(finalize = true) {
 function handlePlaybackChange({ time, isPlaying }) {
   const realtime = state.realtimeDecode;
   if (!realtime) return;
-  if (!isPlaying) updateSnrMeter();
   const elapsed = Math.max(0, Math.min(realtime.endSec - realtime.startSec, time - realtime.startSec));
   const target = Math.min(realtime.endSample, realtime.startSample + Math.floor(elapsed * realtime.sampleRate));
+  if (target < realtime.cursor) {
+    realtime.cursor = realtime.startSample;
+    state.webDecoder?.reset({
+      ...readReceiveOptions(),
+      dsp: { ...readDspOptions(), engine: 'mmsstv' },
+      emitFrames: true,
+      emitSnr: true,
+      renderEveryRows: 8,
+    });
+    setReceiverStatus('实时搜索信号', 'active');
+    setOfflineDecodeProgress(0, '实时解码 · 已从新位置重新同步');
+  }
   if (target > realtime.cursor) {
     state.webDecoder?.push(realtime.samples.subarray(realtime.cursor, target), realtime.sampleRate);
     realtime.cursor = target;
+  }
+  if (!isPlaying) {
+    if (time >= realtime.endSec - 0.02) stopRealtimeDecode(true);
+    else updateSnrMeter();
+    return;
   }
   if (time >= realtime.endSec - 0.02) stopRealtimeDecode(true);
 }
 
 function bindReceiverEvents(receiver) {
   receiver.addEventListener('searching', () => {
-    if (state.micActive) setReceiverStatus('搜索信号');
+    if (state.micActive || state.micStarting || state.realtimeDecode) {
+      updateReceiverSearchingPresentation();
+    }
   });
   receiver.addEventListener('snr', ({ detail }) => {
     if (!state.micActive && !state.realtimeDecode) return;
     updateSnrMeter(detail.snrDb);
   });
   receiver.addEventListener('locked', ({ detail }) => {
+    cancelReceiveCompletionPrompt();
     const labels = { vis: 'VIS', fsk: 'FSK', sync: '同步', manual: '手动' };
-    setReceiverStatus(`已锁定 · ${labels[detail.source] || '自动'}`, 'locked');
+    setReceiverStatus(
+      `已锁定 · ${labels[detail.source] || '自动'}${state.micActive ? ' · 录音中' : ''}`,
+      'locked'
+    );
     document.getElementById('receiverMode').textContent = detail.mode.name;
+    state.receiverPanelProgressBucket = -1;
+    setReceiverPanelState(`LOCKED · ${detail.mode.name}`, 'receiving');
     if (state.offlineDecodeActive) {
       setOfflineDecodeProgress(0.05, `已锁定 ${detail.mode.name} · 正在读取图像行`);
     }
   });
   receiver.addEventListener('row', ({ detail }) => {
-    if (state.offlineDecodeActive) {
-      const ratio = Math.max(0, Math.min(1, detail.rows / detail.totalRows));
-      setOfflineDecodeProgress(0.05 + ratio * 0.45, `正在读取图像行 ${detail.rows} / ${detail.totalRows}`);
-    } else {
-      setOfflineDecodeProgress(detail.rows / detail.totalRows, `实时解码 ${detail.rows} / ${detail.totalRows}`);
-    }
+    updateReceiverRowPresentation(detail);
   });
+  receiver.addEventListener('frame-start', ({ detail }) => {
+    cancelReceiveCompletionPrompt();
+    beginReceiverFrame(detail);
+  });
+  receiver.addEventListener('frame-patch', ({ detail }) => applyReceiverFramePatch(detail));
+  receiver.addEventListener('frame-error', ({ detail }) => finalizeReceiverFrameError(detail));
   receiver.addEventListener('decode-progress', ({ detail }) => {
     if (!state.offlineDecodeActive) return;
     const progress = Math.max(0, Math.min(1, Number(detail.progress) || 0));
@@ -761,15 +942,145 @@ function bindReceiverEvents(receiver) {
       `正在重建图像 ${Math.round(progress * 100)}%`
     );
   });
-  receiver.addEventListener('frame', ({ detail }) => renderReceiverFrame(detail.result));
+  receiver.addEventListener('frame', ({ detail }) => {
+    const complete = detail.complete !== false && detail.partial !== true;
+    const completionRatio = complete
+      ? 1
+      : Math.max(0, Math.min(1,
+          Number(detail.completionRatio) || Number(detail.rows) / Math.max(1, Number(detail.result?.height) || 1)
+        ));
+    renderReceiverFrame(detail.result, {
+      append: true,
+      partial: detail.partial === true,
+      complete,
+      completionRatio,
+    });
+    if (complete) {
+      state.receiverFrameCount++;
+      setReceiverPanelState(`FRAME ${state.receiverFrameCount} COMPLETE`, 'complete');
+      setOfflineDecodeProgress(1, `${detail.result.mode.name} · 图像接收完成`, 'complete');
+    } else if (detail.partial !== true) {
+      setReceiverPanelState(`FRAME INCOMPLETE · ${Math.round(completionRatio * 100)}%`, 'error');
+      setOfflineDecodeProgress(completionRatio, `${detail.result.mode.name} · 图像接收不完整`, 'error');
+    }
+  });
+  receiver.addEventListener('transmission-ended', ({ detail }) => {
+    scheduleReceiveCompletionPrompt(detail);
+  });
+  receiver.addEventListener('recording-limit', ({ detail }) => {
+    if (!state.micActive || state.micStopPromise) return;
+    cancelReceiveCompletionPrompt();
+    const minutes = Math.max(1, Math.round((Number(detail.durationSeconds) || 600) / 60));
+    setReceiverStatus(`已达录音上限 · 正在停止`, 'active');
+    ui.toast(`录音已达 ${minutes} 分钟上限，正在自动停止并保留已录内容`, 'error');
+    void stopMicrophoneReceiver({ limitReached: true, durationSeconds: detail.durationSeconds });
+  });
   receiver.addEventListener('error', ({ detail }) => {
-    if (state.micActive) setReceiverStatus('等待有效信号', 'active');
+    cancelReceiveCompletionPrompt();
+    setReceiverPanelState('RECEIVER ERROR', 'error');
+    if (state.micActive) setReceiverStatus('等待有效信号 · 本机录音中', 'active');
     if (state.realtimeDecode) {
       stopRealtimeDecode(false);
       ui.toast('实时解码失败: ' + detail.message, 'error');
     }
     console.warn('Receiver:', detail.message);
   });
+}
+
+export function updateReceiverSearchingPresentation(
+  completedFrames = state.receiverFrameCount,
+  recording = state.micActive
+) {
+  setReceiverPanelState(completedFrames ? 'SEARCHING NEXT' : 'SEARCHING', 'searching');
+  setReceiverStatus(recording ? '搜索信号 · 本机录音中' : '搜索信号', 'active');
+  if (completedFrames) {
+    setOfflineDecodeProgress(null, `等待下一帧 · 已完成 ${completedFrames} 张`);
+  }
+}
+
+export function updateReceiverRowPresentation(detail) {
+  const rows = Math.max(0, Number(detail?.rows) || 0);
+  const totalRows = Math.max(1, Number(detail?.totalRows) || 1);
+  const ratio = Math.max(0, Math.min(1, rows / totalRows));
+  const percent = Math.round(ratio * 100);
+  const bucket = Math.min(10, Math.floor(percent / 10));
+  if (bucket !== state.receiverPanelProgressBucket) {
+    state.receiverPanelProgressBucket = bucket;
+    setReceiverPanelState(`RECEIVING · ${bucket * 10}%`, 'receiving');
+  }
+  if (state.offlineDecodeActive) {
+    setOfflineDecodeProgress(0.05 + ratio * 0.45, `正在读取图像行 ${rows} / ${totalRows}`);
+  } else {
+    setOfflineDecodeProgress(ratio, `实时解码 ${rows} / ${totalRows}`);
+  }
+}
+
+function opaqueBlackPixels(width, height) {
+  const pixels = new Uint8ClampedArray(width * height * 4);
+  for (let offset = 3; offset < pixels.length; offset += 4) pixels[offset] = 255;
+  return pixels;
+}
+
+function shouldFollowLiveFrame() {
+  return state.activeDecodedFrameIndex < 0 ||
+    state.activeDecodedFrameIndex === state.decodedFrames.length - 1;
+}
+
+export function beginReceiverFrame({ frameId, width, height, mode, dsp = {} }) {
+  if (!Number.isSafeInteger(frameId) || !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
+      width < 1 || height < 1 || !mode) return;
+  const follow = shouldFollowLiveFrame();
+  const frame = {
+    receiverFrameId: frameId,
+    result: { width, height, mode, dsp, pixels: opaqueBlackPixels(width, height) },
+    complete: false,
+    completionRatio: 0,
+    livePartial: true,
+  };
+  const lastIndex = state.decodedFrames.length - 1;
+  if (lastIndex >= 0 && state.decodedFrames[lastIndex].livePartial) {
+    state.decodedFrames[lastIndex] = frame;
+  } else {
+    state.decodedFrames.push(frame);
+  }
+  showDecodedFrame(follow ? state.decodedFrames.length - 1 : state.activeDecodedFrameIndex);
+}
+
+export function applyReceiverFramePatch({ frameId, y, rowCount, pixels, rows, totalRows }) {
+  const lastIndex = state.decodedFrames.length - 1;
+  const frame = state.decodedFrames[lastIndex];
+  if (!frame?.livePartial || frame.receiverFrameId !== frameId || !(pixels instanceof Uint8ClampedArray)) return;
+  const { result } = frame;
+  const top = Math.max(0, Math.min(result.height, Math.floor(Number(y) || 0)));
+  const count = Math.max(0, Math.min(result.height - top, Math.floor(Number(rowCount) || 0)));
+  if (!count || pixels.length !== result.width * count * 4) return;
+  result.pixels.set(pixels, top * result.width * 4);
+  frame.completionRatio = Math.max(
+    frame.completionRatio,
+    Math.max(0, Math.min(1, Number(rows) / Math.max(1, Number(totalRows) || result.height)))
+  );
+  if (state.activeDecodedFrameIndex === lastIndex) {
+    ui.renderCanvasPatch(
+      document.getElementById('resultCanvas'), pixels, result.width, result.height, top, count
+    );
+    updateDecodedFramePresentation(frame, lastIndex);
+  }
+}
+
+export function finalizeReceiverFrameError({ frameId } = {}) {
+  const lastIndex = state.decodedFrames.length - 1;
+  const frame = state.decodedFrames[lastIndex];
+  if (!frame?.livePartial || frame.receiverFrameId !== frameId) return;
+  // The authoritative full-frame correction failed, but the already committed
+  // strips remain useful. Freeze them as an explicitly incomplete, savable
+  // result so the page cannot remain stuck in LIVE state forever.
+  frame.livePartial = false;
+  frame.complete = false;
+  if (state.activeDecodedFrameIndex === lastIndex) {
+    updateDecodedFramePresentation(frame, lastIndex);
+  } else {
+    updateResultActionButtons();
+  }
 }
 
 export function updateSnrMeter(snrDb = null) {
@@ -829,47 +1140,141 @@ export function showDecodedFrame(index) {
   const { result } = frame;
   const canvas = document.getElementById('resultCanvas');
   ui.renderToCanvas(canvas, result.pixels, result.width, result.height);
-  document.getElementById('saveImageBtn').disabled = false;
-  document.getElementById('resetDecodedBtn').disabled = false;
-  document.getElementById('decoderOutput').classList.remove('is-empty');
+  updateDecodedFramePresentation(frame, nextIndex);
+}
+
+function updateDecodedFramePresentation(frame, nextIndex) {
+  const { result } = frame;
+  const canvas = document.getElementById('resultCanvas');
+  updateResultActionButtons();
+  const output = document.getElementById('decoderOutput');
+  output.classList.remove('is-empty');
+  output.classList.toggle('is-live-preview', frame.livePartial === true);
+  output.style.setProperty('--receive-progress', `${Math.round((frame.completionRatio || 0) * 100)}%`);
+  updateLiveScanlineGeometry(canvas, output, frame.completionRatio || 0);
   document.getElementById('receiverMode').textContent = result.mode.name;
   document.getElementById('receiverAfc').textContent = result.dsp?.afcLocked
     ? `${result.dsp.afcOffsetHz >= 0 ? '+' : ''}${result.dsp.afcOffsetHz.toFixed(1)} Hz`
     : (result.dsp?.afc ? '未锁定' : '关闭');
 
   const hasAudioRange = Number.isFinite(frame.startSec) && Number.isFinite(frame.endSec);
+  const incomplete = document.getElementById('resultIncomplete');
+  incomplete.hidden = frame.complete !== false;
+  incomplete.classList.toggle('is-live', frame.livePartial === true);
+  incomplete.textContent = frame.livePartial
+    ? `LIVE · 接收中 ${Math.round((frame.completionRatio || 0) * 100)}%`
+    : `不完整 ${Math.round((frame.completionRatio || 0) * 100)}%`;
   if (hasAudioRange) {
     const rangeText = `${formatAudioTime(frame.startSec)} - ${formatAudioTime(frame.endSec)}`;
     document.getElementById('resultAudioRange').textContent = rangeText;
-    const incomplete = document.getElementById('resultIncomplete');
-    incomplete.hidden = frame.complete !== false;
-    incomplete.textContent = `不完整 ${Math.round((frame.completionRatio || 0) * 100)}%`;
     canvas.setAttribute(
       'aria-label',
       `第 ${nextIndex + 1} 张解码图像，音频 ${formatAudioTime(frame.startSec)} 至 ${formatAudioTime(frame.endSec)}`
     );
   } else {
     document.getElementById('resultAudioRange').textContent = '--:--.- - --:--.-';
-    document.getElementById('resultIncomplete').hidden = true;
-    canvas.setAttribute('aria-label', '解码结果图像');
+    canvas.setAttribute(
+      'aria-label',
+      frame.complete === false
+        ? `第 ${nextIndex + 1} 张实时解码图像，完成 ${Math.round((frame.completionRatio || 0) * 100)}%`
+        : '解码结果图像'
+    );
   }
 
-  document.getElementById('decodedPageCount').textContent =
-    `${String(nextIndex + 1).padStart(2, '0')} / ${String(state.decodedFrames.length).padStart(2, '0')}`;
+  const pageCount = document.getElementById('decodedPageCount');
+  const pageCountText = `${String(nextIndex + 1).padStart(2, '0')} / ${String(state.decodedFrames.length).padStart(2, '0')}`;
+  if (pageCount.textContent !== pageCountText) pageCount.textContent = pageCountText;
   document.getElementById('previousDecodedFrame').disabled = nextIndex === 0;
   document.getElementById('nextDecodedFrame').disabled = nextIndex === state.decodedFrames.length - 1;
 }
 
-export function renderReceiverFrame(result) {
-  setDecodedFrames([{ result, complete: true, completionRatio: 1 }]);
+function updateLiveScanlineGeometry(canvas, output, completionRatio = 0) {
+  const stage = canvas?.parentElement;
+  if (!stage || !output) return;
+  const stageRect = stage.getBoundingClientRect();
+  const canvasRect = canvas.getBoundingClientRect();
+  const canvasBoxWidth = canvasRect.width || stage.clientWidth;
+  const canvasBoxHeight = canvasRect.height || stage.clientHeight;
+  if (!canvasBoxWidth || !canvasBoxHeight || !canvas.width || !canvas.height) {
+    output.style.setProperty('--receive-image-left', '0px');
+    output.style.setProperty('--receive-image-top', '0px');
+    output.style.setProperty('--receive-image-width', '100%');
+    output.style.setProperty('--receive-image-height', '100%');
+    output.style.setProperty('--receive-scanline-top', `${Math.max(0, Math.min(1, completionRatio)) * 100}%`);
+    return;
+  }
+  const scale = Math.min(canvasBoxWidth / canvas.width, canvasBoxHeight / canvas.height);
+  const imageWidth = canvas.width * scale;
+  const imageHeight = canvas.height * scale;
+  const canvasLeft = canvasRect.width ? canvasRect.left - stageRect.left - stage.clientLeft : 0;
+  const canvasTop = canvasRect.height ? canvasRect.top - stageRect.top - stage.clientTop : 0;
+  const imageLeft = canvasLeft + (canvasBoxWidth - imageWidth) / 2;
+  const imageTop = canvasTop + (canvasBoxHeight - imageHeight) / 2;
+  const scanlineTop = imageTop + imageHeight * Math.max(0, Math.min(1, completionRatio));
+  output.style.setProperty('--receive-image-left', `${imageLeft}px`);
+  output.style.setProperty('--receive-image-top', `${imageTop}px`);
+  output.style.setProperty('--receive-image-width', `${imageWidth}px`);
+  output.style.setProperty('--receive-image-height', `${imageHeight}px`);
+  output.style.setProperty('--receive-scanline-top', `${scanlineTop}px`);
 }
 
-export function resetDecodedResult({ announce = false, resetProgress = true } = {}) {
+function setupLiveScanlineResize() {
+  const canvas = document.getElementById('resultCanvas');
+  const output = document.getElementById('decoderOutput');
+  const stage = canvas?.parentElement;
+  if (!canvas || !output || !stage) return;
+  const refresh = () => {
+    const frame = activeDecodedFrame();
+    if (frame?.livePartial) updateLiveScanlineGeometry(canvas, output, frame.completionRatio || 0);
+  };
+  if (typeof ResizeObserver === 'function') {
+    state.resultResizeObserver = new ResizeObserver(refresh);
+    state.resultResizeObserver.observe(stage);
+  } else {
+    window.addEventListener('resize', refresh, { passive: true });
+  }
+}
+
+export function renderReceiverFrame(result, {
+  append = false,
+  partial = false,
+  complete = !partial,
+  completionRatio = result?.completionRatio,
+} = {}) {
+  const normalizedCompletion = Math.max(0, Math.min(1, Number(completionRatio) || 0));
+  const frame = {
+    result,
+    complete,
+    completionRatio: complete ? 1 : normalizedCompletion,
+    livePartial: partial,
+  };
+  if (!append) {
+    setDecodedFrames([frame]);
+    return;
+  }
+  const follow = shouldFollowLiveFrame();
+  const lastIndex = state.decodedFrames.length - 1;
+  if (lastIndex >= 0 && state.decodedFrames[lastIndex].livePartial) {
+    state.decodedFrames[lastIndex] = frame;
+  } else {
+    state.decodedFrames.push(frame);
+  }
+  showDecodedFrame(follow ? state.decodedFrames.length - 1 : state.activeDecodedFrameIndex);
+}
+
+export function resetDecodedResult({ announce = false, resetProgress = true, clearRecording = false } = {}) {
+  cancelReceiveCompletionPrompt();
+  const receiverIdle = !state.micActive && !state.micStarting && !state.micStopPromise && !state.realtimeDecode;
+  if (receiverIdle) {
+    try { state.webDecoder?.cancelReceiver?.(); } catch (error) { console.warn('Receiver reset cancel:', error); }
+  }
   state.decodeGeneration++;
   state.offlineDecodeActive = false;
   state.webDecoder?.cancelBatch('Decoded images reset');
   state.decodedFrames = [];
   state.activeDecodedFrameIndex = -1;
+  state.receiverFrameCount = 0;
+  state.receiverPanelProgressBucket = -1;
 
   const canvas = document.getElementById('resultCanvas');
   if (canvas) {
@@ -882,6 +1287,7 @@ export function resetDecodedResult({ announce = false, resetProgress = true } = 
   }
 
   document.getElementById('decoderOutput')?.classList.add('is-empty');
+  document.getElementById('decoderOutput')?.classList.remove('is-live-preview');
   const audioRange = document.getElementById('resultAudioRange');
   const incomplete = document.getElementById('resultIncomplete');
   const pageCount = document.getElementById('decodedPageCount');
@@ -894,22 +1300,57 @@ export function resetDecodedResult({ announce = false, resetProgress = true } = 
   if (next) next.disabled = true;
   const canvasLabel = document.getElementById('resultCanvas');
   canvasLabel?.setAttribute('aria-label', '解码结果图像');
-  const saveButton = document.getElementById('saveImageBtn');
-  const resetButton = document.getElementById('resetDecodedBtn');
-  if (saveButton) saveButton.disabled = true;
-  if (resetButton) resetButton.disabled = true;
+  if (clearRecording) {
+    state.microphoneRecording = null;
+    closeRecordingSaveDialog(false);
+  }
+  updateResultActionButtons();
   const mode = document.getElementById('receiverMode');
   const afc = document.getElementById('receiverAfc');
   if (mode) mode.textContent = '--';
   if (afc) afc.textContent = '--';
   if (resetProgress) hideOfflineDecodeProgress();
-  if (announce) ui.toast('全部解码画面已重置', 'success');
+  if (receiverIdle) {
+    setReceiverPanelState('STANDBY', 'standby');
+  }
+  if (announce) ui.toast(clearRecording ? '接收结果和录音已清空' : '全部解码画面已重置', 'success');
+}
+
+function updateResultActionButtons() {
+  const hasFrame = state.decodedFrames.length > 0;
+  const hasSavableFrame = hasFrame && activeDecodedFrame()?.livePartial !== true;
+  const hasRecording = !!state.microphoneRecording;
+  const saveImage = document.getElementById('saveImageBtn');
+  const reset = document.getElementById('resetDecodedBtn');
+  const downloadRecording = document.getElementById('downloadRecordingBtn');
+  if (saveImage) {
+    saveImage.disabled = !hasSavableFrame;
+    saveImage.title = hasFrame && !hasSavableFrame ? '接收完成后可保存' : '保存解码图片';
+    saveImage.setAttribute('aria-label', saveImage.title);
+  }
+  if (reset) {
+    reset.disabled = !hasFrame && !hasRecording;
+    reset.title = hasRecording ? '清空解码画面和接收录音' : '重置解码画面';
+    reset.setAttribute('aria-label', reset.title);
+  }
+  if (downloadRecording) {
+    downloadRecording.hidden = !hasRecording;
+    downloadRecording.disabled = !hasRecording;
+  }
 }
 
 function setReceiverStatus(text, stateClass = '') {
   document.getElementById('receiverStatus').textContent = text;
   const indicator = document.getElementById('liveIndicator');
   if (indicator) indicator.className = `live-indicator ${stateClass}`.trim();
+}
+
+function setReceiverPanelState(text, phase = 'standby') {
+  const panelState = document.getElementById('receiverPanelState');
+  if (!panelState) return;
+  panelState.className = `panel-state is-${phase}`;
+  const label = panelState.querySelector('span');
+  if (label) label.textContent = text;
 }
 
 function setMicrophoneButton(active, disabled = false) {
@@ -919,7 +1360,11 @@ function setMicrophoneButton(active, disabled = false) {
   button.disabled = disabled;
   button.classList.toggle('is-receiving', active);
   button.setAttribute('aria-pressed', active ? 'true' : 'false');
-  button.setAttribute('aria-label', active ? '停止接收' : '开始接收');
+  button.setAttribute(
+    'aria-label',
+    active ? '停止接收并结束本机录音' : '开始接收，本机暂存录音最长 10 分钟'
+  );
+  button.title = active ? '停止接收并保留本机录音' : '接收期间仅在本机暂存录音，最长 10 分钟';
   label.textContent = active ? '停止接收' : '开始接收';
 }
 
@@ -928,10 +1373,25 @@ function toggleMicrophoneReceiver() {
 }
 
 async function startMicrophoneReceiver() {
-  if (!state.webDecoder || state.micActive) return;
+  if (!state.webDecoder || state.micActive || state.micStarting || state.micStopPromise) return;
+  if (state.isProcessing || state.realtimeDecode) {
+    ui.toast('请先停止文件解码，再开始麦克风接收', 'error');
+    return;
+  }
+  if (state.microphoneRecording) {
+    ui.toast('请先下载并清空已暂存的录音，再开始新的接收', 'error');
+    document.getElementById('downloadRecordingBtn')?.focus();
+    return;
+  }
+  cancelReceiveCompletionPrompt({ closeDialog: true, restoreFocus: false });
+  state.receiveCompleteLastPromptedKey = null;
+  state.micStarting = true;
+  state.receiverFrameCount = 0;
   setMicrophoneButton(false, true);
+  document.getElementById('offlineDecodeBtn').disabled = true;
   updateSnrMeter();
   setReceiverStatus('请求权限', 'active');
+  setReceiverPanelState('CONNECTING', 'searching');
   try {
     await state.webDecoder.startMicrophone({
       ...readReceiveOptions(),
@@ -939,23 +1399,298 @@ async function startMicrophoneReceiver() {
     });
     state.micActive = true;
     setMicrophoneButton(true);
-    setReceiverStatus('搜索信号', 'active');
-    ui.toast('麦克风接收已开始', 'success');
+    setReceiverStatus('搜索信号 · 本机录音中', 'active');
+    setReceiverPanelState('SEARCHING', 'searching');
+    ui.toast('麦克风接收已开始；录音仅在本机暂存，最长 10 分钟', 'success');
   } catch (error) {
     setMicrophoneButton(false);
     setReceiverStatus('无法启动');
+    setReceiverPanelState('START FAILED', 'error');
     ui.toast('麦克风启动失败: ' + error.message, 'error');
+  } finally {
+    state.micStarting = false;
+    updateOfflineDecodeMode();
   }
 }
 
-async function stopMicrophoneReceiver() {
-  if (!state.webDecoder || !state.micActive) return;
-  setMicrophoneButton(true, true);
-  state.micActive = false;
-  await state.webDecoder.stopMicrophone(true);
-  setMicrophoneButton(false);
-  updateSnrMeter();
-  setReceiverStatus('已停止');
+async function stopMicrophoneReceiver({ limitReached = false, durationSeconds = null } = {}) {
+  cancelReceiveCompletionPrompt({ closeDialog: true, restoreFocus: false });
+  if (!state.webDecoder || (!state.micActive && !state.micStopPromise)) return;
+  if (state.micStopPromise) return state.micStopPromise;
+  state.micStopPromise = (async () => {
+    setMicrophoneButton(true, true);
+    state.micActive = false;
+    let failed = false;
+    try {
+      const recording = await state.webDecoder.stopMicrophone(true);
+      if (recording) {
+        state.microphoneRecording = {
+          ...recording,
+          limitReached: recording.limitReached || limitReached,
+          limitDurationSeconds: durationSeconds,
+          capturedAt: new Date(),
+        };
+        updateResultActionButtons();
+        openRecordingSaveDialog(state.microphoneRecording);
+      } else {
+        ui.toast('接收期间没有采集到录音', 'error');
+      }
+    } catch (error) {
+      failed = true;
+      console.error(error);
+      setReceiverStatus('停止失败');
+      ui.toast('停止麦克风失败: ' + error.message, 'error');
+    } finally {
+      setMicrophoneButton(false);
+      updateSnrMeter();
+      if (!failed) {
+        setReceiverStatus(limitReached ? '已达上限 · 已停止' : '已停止');
+        setReceiverPanelState('STANDBY', 'standby');
+      }
+    }
+  })();
+  try {
+    return await state.micStopPromise;
+  } finally {
+    state.micStopPromise = null;
+    updateOfflineDecodeMode();
+  }
+}
+
+function downloadMicrophoneRecording({ samples, sampleRate, capturedAt = new Date() }) {
+  const wav = encodeWAV(samples, sampleRate);
+  const blob = new Blob([wav], { type: 'audio/wav' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  const timestamp = capturedAt.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  link.href = url;
+  link.download = `sstv_recording_${timestamp}.wav`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function syncModalBodyState() {
+  const completionOpen = document.getElementById('receiveCompleteDialog')?.hidden === false;
+  const recordingOpen = document.getElementById('recordingSaveDialog')?.hidden === false;
+  document.body.classList.toggle('recording-dialog-open', completionOpen || recordingOpen);
+}
+
+function receiveCompletionKey(detail) {
+  const sessionId = Number.isSafeInteger(detail?.sessionId) ? detail.sessionId : 'local';
+  const frameId = Number.isSafeInteger(detail?.frameId) ? detail.frameId : state.receiverFrameCount;
+  return `${sessionId}:${frameId}`;
+}
+
+export function shouldPromptReceiveCompletion(detail, context = {}) {
+  const recordingDialogOpen = document.getElementById('recordingSaveDialog')?.hidden === false;
+  const values = {
+    micActive: state.micActive,
+    micStarting: state.micStarting,
+    micStopPending: !!state.micStopPromise,
+    realtimeActive: !!state.realtimeDecode,
+    dialogOpen: document.getElementById('receiveCompleteDialog')?.hidden === false || recordingDialogOpen,
+    ...context,
+  };
+  return detail?.complete === true && detail?.reason === 'nominal-tail' &&
+    values.micActive === true && values.micStarting !== true &&
+    values.micStopPending !== true && values.realtimeActive !== true &&
+    values.dialogOpen !== true;
+}
+
+export function scheduleReceiveCompletionPrompt(detail, delayMs = RECEIVE_COMPLETE_PROMPT_DELAY_MS) {
+  if (!shouldPromptReceiveCompletion(detail)) return false;
+  const key = receiveCompletionKey(detail);
+  if (state.receiveCompleteCandidateKey === key || state.receiveCompleteLastPromptedKey === key) return false;
+
+  if (state.receiveCompleteTimer != null) clearTimeout(state.receiveCompleteTimer);
+  state.receiveCompleteCandidateKey = key;
+  state.receiveCompleteTimer = setTimeout(() => {
+    state.receiveCompleteTimer = null;
+    if (state.receiveCompleteCandidateKey !== key || !shouldPromptReceiveCompletion(detail)) return;
+    state.receiveCompleteCandidateKey = null;
+    state.receiveCompleteLastPromptedKey = key;
+    openReceiveCompletionDialog(detail);
+  }, Math.max(0, Number(delayMs) || 0));
+  return true;
+}
+
+export function cancelReceiveCompletionPrompt({ closeDialog = true, restoreFocus = true } = {}) {
+  if (state.receiveCompleteTimer != null) clearTimeout(state.receiveCompleteTimer);
+  state.receiveCompleteTimer = null;
+  state.receiveCompleteCandidateKey = null;
+  if (closeDialog) closeReceiveCompletionDialog(restoreFocus);
+}
+
+function setupReceiveCompletionDialog() {
+  const dialog = document.getElementById('receiveCompleteDialog');
+  const continueButton = document.getElementById('receiveCompleteContinue');
+  const stopButton = document.getElementById('receiveCompleteStop');
+  if (!dialog || !continueButton || !stopButton) return;
+
+  continueButton.addEventListener('click', () => {
+    closeReceiveCompletionDialog();
+    try { state.webDecoder?.rearmReceiver?.(); } catch (error) { console.warn('Receiver rearm:', error); }
+  });
+  stopButton.addEventListener('click', () => {
+    if (state.receiveCompleteDecisionInFlight || !state.micActive) return;
+    state.receiveCompleteDecisionInFlight = true;
+    closeReceiveCompletionDialog(false, { fallbackFocus: true });
+    void stopMicrophoneReceiver().finally(() => {
+      state.receiveCompleteDecisionInFlight = false;
+    });
+  });
+  dialog.addEventListener('click', event => {
+    if (event.target === dialog) continueButton.click();
+  });
+  dialog.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      continueButton.click();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const buttons = [continueButton, stopButton];
+    const index = buttons.indexOf(document.activeElement);
+    if (event.shiftKey && index <= 0) {
+      event.preventDefault();
+      stopButton.focus();
+    } else if (!event.shiftKey && index === buttons.length - 1) {
+      event.preventDefault();
+      continueButton.focus();
+    }
+  });
+}
+
+export function openReceiveCompletionDialog(detail = {}) {
+  const dialog = document.getElementById('receiveCompleteDialog');
+  const recordingDialog = document.getElementById('recordingSaveDialog');
+  if (!dialog || !dialog.hidden || recordingDialog?.hidden === false) return false;
+
+  // A navigation drawer or settings sheet may already own the page's inert
+  // state. Close those layers before making this dialog modal, otherwise the
+  // prompt itself can remain inert and become impossible to operate.
+  const navToggle = document.getElementById('navToggle');
+  if (navToggle?.getAttribute('aria-expanded') === 'true') navToggle.click();
+  const settingsToggle = document.querySelector('.rx-settings-fab[aria-expanded="true"]');
+  if (settingsToggle) settingsToggle.click();
+  dialog.removeAttribute('inert');
+
+  state.receiveCompleteDialogReturnFocus = document.activeElement;
+  state.receiveCompleteDialogInertElements = [...document.body.children].filter(element =>
+    element !== dialog && !element.hasAttribute('inert')
+  );
+  for (const element of state.receiveCompleteDialogInertElements) element.setAttribute('inert', '');
+  const modeName = typeof detail.mode === 'string' ? detail.mode : detail.mode?.name;
+  document.getElementById('receiveCompleteMode').textContent = modeName || 'AUTO DETECTED';
+  dialog.hidden = false;
+  dialog.setAttribute('aria-hidden', 'false');
+  syncModalBodyState();
+  const continueButton = document.getElementById('receiveCompleteContinue');
+  try { continueButton?.focus({ preventScroll: true }); } catch (_) { continueButton?.focus(); }
+  return true;
+}
+
+export function closeReceiveCompletionDialog(restoreFocus = true, { fallbackFocus = false } = {}) {
+  const dialog = document.getElementById('receiveCompleteDialog');
+  if (!dialog || dialog.hidden) return false;
+  dialog.hidden = true;
+  dialog.setAttribute('aria-hidden', 'true');
+  for (const element of state.receiveCompleteDialogInertElements) element.removeAttribute('inert');
+  state.receiveCompleteDialogInertElements = [];
+  syncModalBodyState();
+  if (restoreFocus) {
+    const target = state.receiveCompleteDialogReturnFocus?.isConnected
+      ? state.receiveCompleteDialogReturnFocus
+      : document.getElementById('micReceiveBtn');
+    target?.focus?.();
+  }
+  if (!restoreFocus && fallbackFocus) document.getElementById('micReceiveBtn')?.focus?.();
+  state.receiveCompleteDialogReturnFocus = null;
+  return true;
+}
+
+function setupRecordingSaveDialog() {
+  const dialog = document.getElementById('recordingSaveDialog');
+  const yes = document.getElementById('recordingSaveYes');
+  const no = document.getElementById('recordingSaveNo');
+  if (!dialog || !yes || !no) return;
+  yes.addEventListener('click', () => {
+    if (state.microphoneRecording) downloadMicrophoneRecording(state.microphoneRecording);
+    state.microphoneRecording = null;
+    closeRecordingSaveDialog();
+    updateResultActionButtons();
+    ui.toast('接收录音已保存', 'success');
+  });
+  no.addEventListener('click', () => {
+    closeRecordingSaveDialog();
+    updateResultActionButtons();
+    ui.toast('录音已暂存，可稍后下载', 'success');
+  });
+  dialog.addEventListener('click', event => {
+    if (event.target === dialog) no.click();
+  });
+  dialog.addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      no.click();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+    const buttons = [no, yes];
+    const index = buttons.indexOf(document.activeElement);
+    if (event.shiftKey && index <= 0) {
+      event.preventDefault();
+      yes.focus();
+    } else if (!event.shiftKey && index === buttons.length - 1) {
+      event.preventDefault();
+      no.focus();
+    }
+  });
+}
+
+function openRecordingSaveDialog(recording) {
+  const dialog = document.getElementById('recordingSaveDialog');
+  if (!dialog || !dialog.hidden) return;
+  const openedFromCompletionPrompt = state.receiveCompleteDecisionInFlight;
+  closeReceiveCompletionDialog(false);
+  const activeElement = document.activeElement;
+  const completionAction = activeElement?.closest?.('#receiveCompleteDialog');
+  state.recordingDialogReturnFocus = !openedFromCompletionPrompt && !completionAction && activeElement?.isConnected &&
+      !activeElement.hidden && !activeElement.closest?.('[hidden], [inert]')
+    ? activeElement
+    : document.getElementById('micReceiveBtn');
+  state.recordingDialogInertElements = [...document.body.children].filter(element =>
+    element !== dialog && !element.hasAttribute('inert')
+  );
+  for (const element of state.recordingDialogInertElements) element.setAttribute('inert', '');
+  const duration = recording.samples.length / recording.sampleRate;
+  document.getElementById('recordingSaveDuration').textContent = `${duration.toFixed(1)} 秒`;
+  const description = document.getElementById('recordingSaveDescription');
+  description.textContent = recording.limitReached
+    ? `录音已达到 ${Math.round(duration / 60)} 分钟安全上限并自动停止；仅保留前 ${Math.round(duration / 60)} 分钟，可立即导出为 WAV 文件。`
+    : '接收期间的原始单声道音频已暂存，可以立即导出为 WAV 文件。';
+  dialog.hidden = false;
+  dialog.setAttribute('aria-hidden', 'false');
+  syncModalBodyState();
+  requestAnimationFrame(() => document.getElementById('recordingSaveYes')?.focus());
+}
+
+function closeRecordingSaveDialog(restoreFocus = true) {
+  const dialog = document.getElementById('recordingSaveDialog');
+  if (!dialog || dialog.hidden) return;
+  dialog.hidden = true;
+  dialog.setAttribute('aria-hidden', 'true');
+  for (const element of state.recordingDialogInertElements) element.removeAttribute('inert');
+  state.recordingDialogInertElements = [];
+  syncModalBodyState();
+  if (restoreFocus) {
+    const target = state.recordingDialogReturnFocus?.isConnected &&
+        !state.recordingDialogReturnFocus.closest?.('[hidden], [inert]')
+      ? state.recordingDialogReturnFocus
+      : document.getElementById('micReceiveBtn');
+    target?.focus?.();
+  }
+  state.recordingDialogReturnFocus = null;
 }
 
 // ---- 自测闭环 ----
@@ -1142,7 +1877,7 @@ function setupPageSettings(basebandController) {
     document.body.classList.toggle('rx-settings-open', open);
 
     if (open) {
-      const firstControl = panel.querySelector('.custom-select-trigger') || getFocusable()[0] || panel;
+      const firstControl = panel.querySelector('.custom-select-trigger:not(:disabled)') || getFocusable()[0] || panel;
       firstControl.focus();
     } else {
       basebandController?.close({ restoreFocus: false });
@@ -1205,9 +1940,13 @@ export function readReceiveOptions() {
 
 function updateReceiveModeLabel() {
   const auto = document.getElementById('autoReceive').checked;
-  document.getElementById('modeSelect').title = auto
+  const select = document.getElementById('modeSelect');
+  select.title = auto
     ? '编码模式；接收将自动识别 VIS、FSK 或同步脉冲'
     : '编码与手动接收模式';
+  select._enhancedControl?.setDisabled(auto);
+  const trigger = select._enhancedControl?.trigger;
+  if (trigger) trigger.title = auto ? '自动接收已启用；关闭 AUTO 后可指定模式' : '选择手动接收模式';
 }
 
 function syncRangeInputs(selection) {
@@ -1248,7 +1987,8 @@ function setRangeValidity(valid) {
   }
   document.getElementById('rangeError').hidden = valid;
   const fast = document.getElementById('fastDecodeMode').checked;
-  document.getElementById('offlineDecodeBtn').disabled = !valid || !state.uploadedAudio || (!fast && !state.webDecoder);
+  document.getElementById('offlineDecodeBtn').disabled = state.micActive || state.micStarting || !!state.micStopPromise
+    || !valid || !state.uploadedAudio || (!fast && !state.webDecoder);
 }
 
 async function saveDecodedImage() {
@@ -1273,13 +2013,9 @@ async function saveDecodedImage() {
   }
 }
 
-function audioTimeFilenameToken(seconds) {
+export function audioTimeFilenameToken(seconds) {
   const tenths = Math.max(0, Math.round((Number(seconds) || 0) * 10));
-  const wholeSeconds = Math.floor(tenths / 10);
-  const hours = Math.floor(wholeSeconds / 3600);
-  const minutes = Math.floor((wholeSeconds % 3600) / 60);
-  const secs = wholeSeconds % 60;
-  return `${hours ? `${hours}h` : ''}${String(minutes).padStart(2, '0')}m${String(secs).padStart(2, '0')}s${tenths % 10}`;
+  return (tenths / 10).toFixed(1);
 }
 
 // ---- 音频上传(WAV / MP3 等)----
@@ -1292,6 +2028,7 @@ async function onAudioFile(file) {
   document.getElementById('offlineDecodeBtn').disabled = true;
   for (const id of ['decodeStartSec', 'decodeEndSec']) document.getElementById(id).disabled = true;
   document.getElementById('audioMeta').textContent = 'LOADING AUDIO...';
+  document.getElementById('audioMeta').classList.remove('is-error');
   const spectrum = document.getElementById('spectrum');
   if (spectrum) spectrum.getContext('2d').clearRect(0, 0, spectrum.width, spectrum.height);
   try {
@@ -1315,9 +2052,13 @@ async function onAudioFile(file) {
     syncRangeInputs(state.audioPlayer.getSelectionTime());
     document.getElementById('audioMeta').textContent =
       `${format} · ${sampleRate}Hz · ${dur}s`;
+    document.getElementById('audioMeta').classList.remove('is-error');
     ui.toast(`${file.name || '音频'} 已加载(${format}, ${sampleRate}Hz, ${dur}s)`, 'success');
   } catch (e) {
+    if (loadId !== state.audioLoadId) return;
     console.error(e);
+    document.getElementById('audioMeta').textContent = `AUDIO LOAD FAILED · ${e.message}`;
+    document.getElementById('audioMeta').classList.add('is-error');
     ui.toast('音频加载失败: ' + e.message, 'error');
   }
 }

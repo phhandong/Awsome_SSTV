@@ -11,9 +11,21 @@ import { MMSSTVCPLL, MMSSTVCLMS, StreamingFIR, makeMmsstvBandpass } from './mmss
 
 // 线性重采样到目标采样率
 export function resample(samples, fromSr, toSr = DEFAULT_SAMPLE_RATE) {
+  if (!samples || !Number.isSafeInteger(samples.length) || samples.length < 0) {
+    throw new Error('Invalid sample buffer');
+  }
+  if (!Number.isFinite(fromSr) || fromSr <= 0 ||
+      !Number.isFinite(toSr) || toSr <= 0) {
+    throw new Error('Invalid resampling rate');
+  }
   if (fromSr === toSr) return samples;
   const ratio = toSr / fromSr;
   const outLen = Math.floor(samples.length * ratio);
+  const maxOutputSamples = 50 * 1024 * 1024;
+  if (!Number.isFinite(ratio) || ratio <= 0 ||
+      !Number.isSafeInteger(outLen) || outLen < 0 || outLen > maxOutputSamples) {
+    throw new Error('Resampled audio exceeds the allocation limit');
+  }
   const out = new Float32Array(outLen);
   for (let i = 0; i < outLen; i++) {
     const srcPos = i / ratio;

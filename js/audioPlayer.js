@@ -30,6 +30,7 @@ export class AudioPlayer {
     this.sampleRate = 0;
     this.duration = 0;
     this.isPlaying = false;
+    this.completedSource = null;
     this.startTime = 0;
     this.pauseTime = 0;
 
@@ -69,31 +70,38 @@ export class AudioPlayer {
   }
 
   setupTimelineInteraction() {
-    let isDraggingPlayhead = false;
-
-    // 点击或拖动时间轴
-    this.timeline.addEventListener('mousedown', (e) => {
-      if (e.button !== 0 || e.target.classList.contains('audio-selection-handle')) return;
-      // 不干扰选区拖动
-      if (this.isDragging) return;
-
-      e.preventDefault();
-      isDraggingPlayhead = true;
-      this.updatePlayheadFromMouse(e);
+    let playheadPointerId = null;
+    this.timeline.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || event.target.classList.contains('audio-selection-handle') || this.isDragging) return;
+      event.preventDefault();
+      playheadPointerId = event.pointerId;
+      this.timeline.setPointerCapture?.(event.pointerId);
+      this.updatePlayheadFromPointer(event);
     });
-
-    document.addEventListener('mousemove', (e) => {
-      if (isDraggingPlayhead && !this.isDragging) {
-        this.updatePlayheadFromMouse(e);
-      }
+    this.timeline.addEventListener('pointermove', event => {
+      if (event.pointerId === playheadPointerId && !this.isDragging) this.updatePlayheadFromPointer(event);
     });
-
-    document.addEventListener('mouseup', () => {
-      isDraggingPlayhead = false;
+    const stop = event => {
+      if (event.pointerId === playheadPointerId) playheadPointerId = null;
+    };
+    this.timeline.addEventListener('pointerup', stop);
+    this.timeline.addEventListener('pointercancel', stop);
+    this.timeline.addEventListener('keydown', event => {
+      if (event.target !== this.timeline || !this.duration ||
+          !['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) return;
+      event.preventDefault();
+      const start = this.selectionStart * this.duration;
+      const end = this.selectionEnd * this.duration;
+      const step = event.shiftKey || event.key === 'PageUp' || event.key === 'PageDown' ? 10 : 1;
+      let time = this.pauseTime || start;
+      if (event.key === 'Home') time = start;
+      else if (event.key === 'End') time = end;
+      else time += ['ArrowRight', 'PageUp'].includes(event.key) ? step : -step;
+      this.seek(Math.max(start, Math.min(end, time)));
     });
   }
 
-  updatePlayheadFromMouse(e) {
+  updatePlayheadFromPointer(e) {
     const rect = this.waveformCanvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const ratio = Math.max(0, Math.min(1, x / rect.width));
@@ -211,41 +219,65 @@ export class AudioPlayer {
     const handles = this.selection.querySelectorAll('.audio-selection-handle');
 
     handles.forEach(handle => {
-      handle.addEventListener('mousedown', (e) => {
+      handle.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
         e.stopPropagation();
         this.isDragging = true;
         this.dragType = handle.dataset.handle;
+        this.dragPointerId = e.pointerId;
         this.dragStartX = e.clientX;
         this.dragStartLeft = this.selectionStart;
         this.dragStartRight = this.selectionEnd;
         document.body.style.cursor = 'ew-resize';
+        handle.setPointerCapture?.(e.pointerId);
       });
-    });
-
-    document.addEventListener('mousemove', (e) => {
-      if (!this.isDragging) return;
-
-      const rect = this.waveformCanvas.getBoundingClientRect();
-      const delta = (e.clientX - this.dragStartX) / rect.width;
-
-      if (this.dragType === 'start') {
-        this.selectionStart = Math.max(0, Math.min(this.dragStartRight - 0.01, this.dragStartLeft + delta));
-      } else if (this.dragType === 'end') {
-        this.selectionEnd = Math.max(this.dragStartLeft + 0.01, Math.min(1, this.dragStartRight + delta));
-      }
-
-      this.updateSelection();
-      this.onSelectionChange(this.getSelectionTime());
-    });
-
-    document.addEventListener('mouseup', () => {
-      if (this.isDragging) {
+      handle.addEventListener('pointermove', e => {
+        if (!this.isDragging || e.pointerId !== this.dragPointerId) return;
+        this.updateSelectionFromPointer(e);
+      });
+      const finish = e => {
+        if (!this.isDragging || e.pointerId !== this.dragPointerId) return;
         this.isDragging = false;
         this.dragType = null;
+        this.dragPointerId = null;
         document.body.style.cursor = '';
         this.onSelectionChange(this.getSelectionTime());
-      }
+      };
+      handle.addEventListener('pointerup', finish);
+      handle.addEventListener('pointercancel', finish);
+      handle.addEventListener('keydown', event => this.handleSelectionKey(event, handle.dataset.handle));
     });
+  }
+
+  updateSelectionFromPointer(event) {
+    const rect = this.waveformCanvas.getBoundingClientRect();
+    const delta = (event.clientX - this.dragStartX) / rect.width;
+    if (this.dragType === 'start') {
+      this.selectionStart = Math.max(0, Math.min(this.dragStartRight - 0.01, this.dragStartLeft + delta));
+    } else if (this.dragType === 'end') {
+      this.selectionEnd = Math.max(this.dragStartLeft + 0.01, Math.min(1, this.dragStartRight + delta));
+    }
+    this.updateSelection();
+    this.onSelectionChange(this.getSelectionTime());
+  }
+
+  handleSelectionKey(event, type) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key) || !this.duration) return;
+    event.preventDefault();
+    const step = (event.shiftKey ? 10 : 1) / this.duration;
+    const direction = ['ArrowRight', 'PageUp'].includes(event.key) ? 1 : -1;
+    if (type === 'start') {
+      if (event.key === 'Home') this.selectionStart = 0;
+      else if (event.key === 'End') this.selectionStart = Math.max(0, this.selectionEnd - 0.01);
+      else this.selectionStart = Math.max(0, Math.min(this.selectionEnd - 0.01, this.selectionStart + direction * step));
+    } else {
+      if (event.key === 'Home') this.selectionEnd = Math.min(1, this.selectionStart + 0.01);
+      else if (event.key === 'End') this.selectionEnd = 1;
+      else this.selectionEnd = Math.max(this.selectionStart + 0.01, Math.min(1, this.selectionEnd + direction * step));
+    }
+    this.updateSelection();
+    this.onSelectionChange(this.getSelectionTime());
   }
 
   updateSelection() {
@@ -254,7 +286,17 @@ export class AudioPlayer {
 
     this.selection.style.left = left + '%';
     this.selection.style.width = width + '%';
-
+    const start = this.selectionStart * this.duration;
+    const end = this.selectionEnd * this.duration;
+    const startHandle = this.selection.querySelector('[data-handle="start"]');
+    const endHandle = this.selection.querySelector('[data-handle="end"]');
+    for (const [handle, value, label] of [[startHandle, start, '选区起点'], [endHandle, end, '选区终点']]) {
+      if (!handle) continue;
+      handle.setAttribute('aria-valuemin', '0');
+      handle.setAttribute('aria-valuemax', String(this.duration));
+      handle.setAttribute('aria-valuenow', value.toFixed(1));
+      handle.setAttribute('aria-valuetext', `${label} ${this.formatTime(value, 1)}`);
+    }
   }
 
   setSelectionTime(start, end) {
@@ -312,28 +354,49 @@ export class AudioPlayer {
     sourceNode.connect(this.audioContext.destination);
 
     // 从选区开始播放
-    const startTime = this.pauseTime || (this.selectionStart * this.duration);
+    const selectionStartTime = this.selectionStart * this.duration;
+    const selectionEndTime = this.selectionEnd * this.duration;
+    const startTime = this.pauseTime > selectionStartTime && this.pauseTime < selectionEndTime
+      ? this.pauseTime
+      : selectionStartTime;
     const duration = (this.selectionEnd * this.duration) - startTime;
 
     sourceNode.start(0, startTime, duration);
     this.startTime = this.audioContext.currentTime - startTime;
     this.isPlaying = true;
+    this.completedSource = null;
     this.playPauseBtn.textContent = '⏸';
+    this.playPauseBtn.setAttribute('aria-label', '暂停音频');
 
     // 播放结束
     sourceNode.onended = () => {
       if (this.sourceNode === sourceNode && this.isPlaying) {
-        this.stop();
+        this.completePlayback(sourceNode);
       }
     };
+  }
+
+  completePlayback(sourceNode = this.sourceNode) {
+    if (!sourceNode || this.completedSource === sourceNode || this.sourceNode !== sourceNode) return;
+    this.completedSource = sourceNode;
+    this.sourceNode = null;
+    this.isPlaying = false;
+    this.pauseTime = 0;
+    this.playPauseBtn.textContent = '▶';
+    this.playPauseBtn.setAttribute('aria-label', '播放音频');
+    // 明确报告选区终点，确保实时解码即使错过最后一帧 rAF 也能完成收尾。
+    this.updatePlaybackPosition(this.selectionEnd * this.duration);
   }
 
   pause() {
     if (this.sourceNode && this.isPlaying) {
       this.pauseTime = this.audioContext.currentTime - this.startTime;
-      this.sourceNode.stop();
+      const sourceNode = this.sourceNode;
+      this.sourceNode = null;
+      sourceNode.stop();
       this.isPlaying = false;
       this.playPauseBtn.textContent = '▶';
+      this.playPauseBtn.setAttribute('aria-label', '继续播放音频');
     }
   }
 
@@ -349,6 +412,7 @@ export class AudioPlayer {
     this.isPlaying = false;
     this.pauseTime = 0;
     this.playPauseBtn.textContent = '▶';
+    this.playPauseBtn.setAttribute('aria-label', '播放音频');
   }
 
   seek(time) {
@@ -368,6 +432,10 @@ export class AudioPlayer {
     const progress = this.duration > 0 ? safeTime / this.duration : 0;
     this.playhead.style.left = (progress * 100) + '%';
     this.currentTimeEl.textContent = this.formatTime(safeTime);
+    this.timeline.setAttribute('aria-valuemin', '0');
+    this.timeline.setAttribute('aria-valuemax', String(this.duration));
+    this.timeline.setAttribute('aria-valuenow', safeTime.toFixed(1));
+    this.timeline.setAttribute('aria-valuetext', `播放位置 ${this.formatTime(safeTime, 1)}`);
     this.onPlaybackChange({ time: safeTime, duration: this.duration, isPlaying: this.isPlaying });
   }
 
@@ -380,7 +448,7 @@ export class AudioPlayer {
 
       // 检查是否超出选区
       if (currentTime >= this.selectionEnd * this.duration) {
-        this.stop();
+        this.completePlayback(this.sourceNode);
       }
     } else if (!this.isPlaying && this.pauseTime) {
       this.updatePlaybackPosition(this.pauseTime);

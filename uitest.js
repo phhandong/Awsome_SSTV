@@ -51,6 +51,24 @@ const modeNames = [...selects[0].options].map(option => option.textContent.split
 const oneModeSelector = selects.length === 1 && !document.getElementById('rxModeSelect');
 const priorityOrder = modeNames.slice(0, 3).join('|') === 'PD120|Robot 36|Robot 72';
 const autoDefault = document.getElementById('autoReceive').checked;
+const modeSelect = document.getElementById('modeSelect');
+const modeTrigger = modeSelect.previousElementSibling;
+const autoLocksManualMode = modeSelect.disabled && modeSelect.tabIndex === -1 && modeTrigger.disabled;
+document.getElementById('autoReceive').checked = false;
+document.getElementById('autoReceive').dispatchEvent(new window.Event('change', { bubbles: true }));
+const manualModeUnlocks = !modeSelect.disabled && !modeTrigger.disabled;
+modeTrigger.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+const modeMenu = document.getElementById('modeSelectMenu');
+const selectedModeOption = modeMenu.querySelector('.is-selected');
+const customSelectOpensFromKeyboard = !modeMenu.hidden && modeTrigger.getAttribute('aria-expanded') === 'true' &&
+  document.activeElement === selectedModeOption;
+selectedModeOption.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+const nextModeOption = document.activeElement;
+nextModeOption.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+const customSelectChoosesAndRestoresFocus = modeMenu.hidden && document.activeElement === modeTrigger &&
+  modeSelect.value === nextModeOption.dataset.value;
+document.getElementById('autoReceive').checked = true;
+document.getElementById('autoReceive').dispatchEvent(new window.Event('change', { bubbles: true }));
 const rangeDisabled = document.getElementById('decodeStartSec').disabled &&
   document.getElementById('decodeEndSec').disabled;
 const formatRestored = document.getElementById('imageFormat').value === 'bmp';
@@ -134,8 +152,9 @@ const receiveButtonStartsReady = receiveButton.textContent.trim() === '开始接
   receiveButton.getAttribute('aria-pressed') === 'false' && receiveButton.disabled;
 const offlineDecodeButton = document.getElementById('offlineDecodeBtn');
 const fastDecodeMode = document.getElementById('fastDecodeMode');
-const offlineDecodeStartsStandard = document.getElementById('offlineDecodeLabel').textContent === '离线解码' &&
-  offlineDecodeButton.classList.contains('accent') && !offlineDecodeButton.classList.contains('primary');
+const offlineDecodeStartsStandard = document.getElementById('offlineDecodeLabel').textContent === '播放并实时解码' &&
+  offlineDecodeButton.classList.contains('accent') && !offlineDecodeButton.classList.contains('primary') &&
+  offlineDecodeButton.title.includes('扬声器发声');
 fastDecodeMode.checked = true;
 fastDecodeMode.dispatchEvent(new window.Event('change', { bubbles: true }));
 const fastDecodeToggleWorks = document.getElementById('offlineDecodeLabel').textContent === '极速解码' &&
@@ -151,16 +170,21 @@ const resultFooterStartsPersistent = !document.getElementById('resultFrameInfo')
   document.getElementById('decodedPageCount').textContent === '00 / 00' &&
   document.getElementById('previousDecodedFrame').disabled &&
   document.getElementById('nextDecodedFrame').disabled;
+const receiverLiveRegionsAreScoped = !document.getElementById('receiverPanelState').hasAttribute('aria-live') &&
+  document.querySelector('.receiver-telemetry')?.getAttribute('role') === 'status' &&
+  document.querySelector('.receiver-telemetry')?.getAttribute('aria-live') === 'polite';
 const navButton = document.getElementById('navToggle');
 const navDrawer = document.getElementById('navDrawer');
 const navDefaultHidden = navButton.getAttribute('aria-expanded') === 'false' &&
-  navDrawer.getAttribute('aria-hidden') === 'true' && !navDrawer.classList.contains('is-open');
+  navDrawer.getAttribute('aria-hidden') === 'true' && navDrawer.hasAttribute('inert') && !navDrawer.classList.contains('is-open');
 navButton.click();
 const navOpens = navButton.getAttribute('aria-expanded') === 'true' &&
-  navDrawer.getAttribute('aria-hidden') === 'false' && navDrawer.classList.contains('is-open');
+  navDrawer.getAttribute('aria-hidden') === 'false' && !navDrawer.hasAttribute('inert') && navDrawer.classList.contains('is-open') &&
+  navDrawer.contains(document.activeElement) && document.querySelector('main').hasAttribute('inert');
 document.getElementById('navScrim').click();
 const navCloses = navButton.getAttribute('aria-expanded') === 'false' &&
-  navDrawer.getAttribute('aria-hidden') === 'true';
+  navDrawer.getAttribute('aria-hidden') === 'true' && document.activeElement === navButton &&
+  !document.querySelector('main').hasAttribute('inert');
 app.updateSnrMeter(20);
 const meter = document.getElementById('receiverMeter');
 const meterResponds = meter.querySelectorAll('.signal-cell').length === 12 &&
@@ -202,6 +226,72 @@ const offlineProgressReturnsIdle = !offlineProgressPanel.hidden &&
   document.getElementById('offlineDecodeProgressValue').textContent === '0%' &&
   document.getElementById('receiverLevelText').textContent === '20.0 dB';
 app.updateSnrMeter();
+const receiverPanelLabel = document.querySelector('#receiverPanelState span');
+let receiverPanelMutations = 0;
+const receiverPanelObserver = new window.MutationObserver(records => { receiverPanelMutations += records.length; });
+receiverPanelObserver.observe(receiverPanelLabel, { childList: true, characterData: true, subtree: true });
+for (let rows = 1; rows <= 100; rows++) app.updateReceiverRowPresentation({ rows, totalRows: 100 });
+await Promise.resolve();
+receiverPanelObserver.disconnect();
+const receiverPanelProgressThrottles = receiverPanelLabel.textContent === 'RECEIVING · 100%' &&
+  receiverPanelMutations === 11;
+app.updateReceiverSearchingPresentation(2, false);
+const receiverSearchesNextConsistently = receiverPanelLabel.textContent === 'SEARCHING NEXT' &&
+  offlineProgressBar.classList.contains('is-indeterminate') &&
+  !offlineProgressBar.hasAttribute('aria-valuenow') &&
+  document.getElementById('offlineDecodeProgressText').textContent === '等待下一帧 · 已完成 2 张';
+const completeTransmission = {
+  frameId: 71,
+  mode: { name: 'Robot 36' },
+  rows: 240,
+  complete: true,
+  completionRatio: 1,
+  reason: 'nominal-tail',
+};
+const eligiblePromptContext = {
+  micActive: true,
+  micStarting: false,
+  micStopPending: false,
+  realtimeActive: false,
+  dialogOpen: false,
+};
+const receiveCompletionEligibility =
+  app.shouldPromptReceiveCompletion(completeTransmission, eligiblePromptContext) &&
+  !app.shouldPromptReceiveCompletion({ ...completeTransmission, complete: false }, eligiblePromptContext) &&
+  !app.shouldPromptReceiveCompletion({ ...completeTransmission, reason: 'explicit-end' }, eligiblePromptContext) &&
+  !app.shouldPromptReceiveCompletion(completeTransmission, { ...eligiblePromptContext, micActive: false }) &&
+  !app.shouldPromptReceiveCompletion(completeTransmission, { ...eligiblePromptContext, micStopPending: true }) &&
+  !app.shouldPromptReceiveCompletion(completeTransmission, { ...eligiblePromptContext, realtimeActive: true }) &&
+  !app.shouldPromptReceiveCompletion(completeTransmission, { ...eligiblePromptContext, dialogOpen: true });
+const preexistingInertBodyChildren = new Set(
+  [...document.body.children].filter(element => element.hasAttribute('inert'))
+);
+const completionReturnFocus = document.getElementById('themeToggle');
+completionReturnFocus.focus();
+app.openReceiveCompletionDialog(completeTransmission);
+const completionDialog = document.getElementById('receiveCompleteDialog');
+const receiveCompletionDialogAccessible = !completionDialog.hidden &&
+  completionDialog.getAttribute('role') === 'dialog' &&
+  completionDialog.getAttribute('aria-modal') === 'true' &&
+  completionDialog.getAttribute('aria-hidden') === 'false' &&
+  document.activeElement === document.getElementById('receiveCompleteContinue') &&
+  document.getElementById('receiveCompleteMode').textContent.includes('Robot 36') &&
+  [...document.body.children]
+    .filter(element => element !== completionDialog)
+    .every(element => element.hasAttribute('inert')) &&
+  document.getElementById('recordingSaveDialog').hidden;
+completionDialog.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+const receiveCompletionEscapeContinues = completionDialog.hidden &&
+  completionDialog.getAttribute('aria-hidden') === 'true' &&
+  document.activeElement === completionReturnFocus &&
+  [...document.body.children]
+    .filter(element => element !== completionDialog)
+    .every(element => element.hasAttribute('inert') === preexistingInertBodyChildren.has(element));
+app.openReceiveCompletionDialog({ ...completeTransmission, frameId: 72 });
+app.cancelReceiveCompletionPrompt();
+const receiveCompletionCancellationCloses = completionDialog.hidden &&
+  completionDialog.getAttribute('aria-hidden') === 'true' &&
+  document.activeElement === completionReturnFocus;
 app.renderReceiverFrame({
   mode: { name: 'TEST' },
   width: 2,
@@ -209,6 +299,69 @@ app.renderReceiverFrame({
   pixels: new Uint8ClampedArray([255, 0, 0, 255, 0, 255, 0, 255]),
   dsp: {},
 });
+app.renderReceiverFrame({
+  mode: { name: 'TEST 2' },
+  width: 2,
+  height: 1,
+  pixels: new Uint8ClampedArray([0, 0, 255, 255, 255, 255, 255, 255]),
+  dsp: {},
+}, { append: true });
+const liveFramesAppend = document.getElementById('decodedPageCount').textContent === '02 / 02' &&
+  document.getElementById('receiverMode').textContent === 'TEST 2' &&
+  !document.getElementById('previousDecodedFrame').disabled;
+const livePartialResult = {
+  mode: { name: 'LIVE PARTIAL' }, width: 2, height: 1,
+  pixels: new Uint8ClampedArray([40, 40, 40, 255, 50, 50, 50, 255]),
+  completionRatio: 0.25, dsp: {},
+};
+app.renderReceiverFrame(livePartialResult, { append: true, partial: true, completionRatio: 0.25 });
+let pageCountMutations = 0;
+const pageCountObserver = new window.MutationObserver(records => { pageCountMutations += records.length; });
+pageCountObserver.observe(document.getElementById('decodedPageCount'), { childList: true, characterData: true, subtree: true });
+app.renderReceiverFrame(livePartialResult, { append: true, partial: true, completionRatio: 0.75 });
+await Promise.resolve();
+pageCountObserver.disconnect();
+const livePartialReplacesInPlace = document.getElementById('decodedPageCount').textContent === '03 / 03' &&
+  document.getElementById('resultIncomplete').textContent === 'LIVE · 接收中 75%' &&
+  document.getElementById('resultIncomplete').classList.contains('is-live') &&
+  document.getElementById('saveImageBtn').disabled &&
+  document.getElementById('decoderOutput').classList.contains('is-live-preview') &&
+  document.getElementById('decoderOutput').style.getPropertyValue('--receive-scanline-top') === '75%' &&
+  pageCountMutations === 0;
+app.renderReceiverFrame({ ...livePartialResult, mode: { name: 'LIVE FINAL' } }, { append: true });
+const liveFinalReplacesPartial = document.getElementById('decodedPageCount').textContent === '03 / 03' &&
+  document.getElementById('receiverMode').textContent === 'LIVE FINAL' &&
+  document.getElementById('resultIncomplete').hidden &&
+  !document.getElementById('saveImageBtn').disabled &&
+  !document.getElementById('decoderOutput').classList.contains('is-live-preview');
+app.renderReceiverFrame(
+  { ...livePartialResult, mode: { name: 'TRUNCATED FINAL' } },
+  { append: true, complete: false, completionRatio: 0.6 }
+);
+const incompleteFinalKeepsSemanticState = document.getElementById('resultIncomplete').textContent === '不完整 60%' &&
+  !document.getElementById('resultIncomplete').classList.contains('is-live') &&
+  !document.getElementById('saveImageBtn').disabled &&
+  !document.getElementById('decoderOutput').classList.contains('is-live-preview');
+app.beginReceiverFrame({
+  frameId: 99,
+  width: 2,
+  height: 1,
+  mode: { name: 'FAILED LIVE' },
+  dsp: {},
+});
+app.applyReceiverFramePatch({
+  frameId: 99,
+  y: 0,
+  rowCount: 1,
+  rows: 1,
+  totalRows: 2,
+  pixels: new Uint8ClampedArray([90, 90, 90, 255, 100, 100, 100, 255]),
+});
+app.finalizeReceiverFrameError({ frameId: 99 });
+const failedFinalFreezesPreview = document.getElementById('resultIncomplete').textContent === '不完整 50%' &&
+  !document.getElementById('resultIncomplete').classList.contains('is-live') &&
+  !document.getElementById('saveImageBtn').disabled &&
+  !document.getElementById('decoderOutput').classList.contains('is-live-preview');
 const decodedResultEnablesReset = !document.getElementById('resetDecodedBtn').disabled &&
   !document.getElementById('saveImageBtn').disabled &&
   !document.getElementById('decoderOutput').classList.contains('is-empty');
@@ -249,6 +402,11 @@ const singleFrameKeepsPagination = !document.getElementById('resultPagination').
   document.getElementById('previousDecodedFrame').disabled &&
   document.getElementById('nextDecodedFrame').disabled &&
   document.getElementById('resultAudioRange').textContent === '00:12.3 - 00:31.8';
+const filenameTimesUsePlainSeconds = app.audioTimeFilenameToken(61.2) === '61.2' &&
+  app.audioTimeFilenameToken(3723.4) === '3723.4' &&
+  !/[hms]/.test(`${app.audioTimeFilenameToken(61.2)}${app.audioTimeFilenameToken(3723.4)}`);
+document.getElementById('receiverPanelState').className = 'panel-state is-complete';
+receiverPanelLabel.textContent = 'FRAME 1 COMPLETE';
 app.resetDecodedResult();
 const decodedResultResets = document.getElementById('resultCanvas').width === 320 &&
   document.getElementById('resultCanvas').height === 256 &&
@@ -258,7 +416,9 @@ const decodedResultResets = document.getElementById('resultCanvas').width === 32
   document.getElementById('saveImageBtn').disabled &&
   document.getElementById('decodedPageCount').textContent === '00 / 00' &&
   document.getElementById('resultAudioRange').textContent === '--:--.- - --:--.-' &&
-  document.getElementById('decoderOutput').classList.contains('is-empty');
+  document.getElementById('decoderOutput').classList.contains('is-empty') &&
+  document.getElementById('receiverPanelState').classList.contains('is-standby') &&
+  receiverPanelLabel.textContent === 'STANDBY';
 const encoderDom = new JSDOM(encoderHtml).window.document;
 const encoderIsSeparate = encoderDom.body.dataset.page === 'encoder' &&
   !!encoderDom.getElementById('encodeBtn') && !!encoderDom.getElementById('modeSelect') &&
@@ -268,6 +428,16 @@ const encoderSettingsCollapsed = encoderDom.getElementById('txSettingsToggle')?.
   encoderSettingsPanel?.getAttribute('aria-hidden') === 'true' && encoderSettingsPanel?.hasAttribute('inert') &&
   encoderSettingsPanel?.contains(encoderDom.getElementById('modeSelect')) &&
   !encoderDom.querySelector('.topbar-actions #modeSelect');
+const encoderModeSummary = encoderDom.getElementById('txCurrentMode') &&
+  encoderDom.getElementById('txChangeModeBtn')?.getAttribute('aria-controls') === 'txSettingsPanel';
+const encoderProgressAccessible = encoderDom.getElementById('encProgress')?.getAttribute('role') === 'progressbar' &&
+  encoderDom.getElementById('encProgress')?.getAttribute('aria-valuenow') === '0';
+const timelineAccessible = document.querySelector('.audio-timeline-container')?.getAttribute('role') === 'slider' &&
+  [...document.querySelectorAll('.audio-selection-handle')].every(handle =>
+    handle.getAttribute('role') === 'slider' && handle.tabIndex === 0
+  );
+const fontPrivacy = !/fonts\.(?:googleapis|gstatic)\.com/.test(`${html}${encoderHtml}`) &&
+  [document, encoderDom].every(doc => doc.querySelector('.console-intro p:last-child')?.textContent.includes('媒体仅在本机处理，不会上传'));
 const decoderWorkspaceStructured = document.getElementById('decoderControls')?.parentElement === document.querySelector('.decoder-workspace') &&
   document.getElementById('decoderOutput')?.parentElement === document.querySelector('.decoder-workspace');
 const frequencyReadoutsRemoved = [document, encoderDom].every(doc => !doc.querySelector('.frequency-readout'));
@@ -286,6 +456,8 @@ const checks = {
   'single 43-mode selector': oneModeSelector && selects[0].options.length === 43,
   'priority mode order': priorityOrder,
   'automatic receive defaults on': autoDefault,
+  'AUTO disables manual RX mode without a duplicate tab stop': autoLocksManualMode && manualModeUnlocks,
+  'custom select supports keyboard selection and restores focus': customSelectOpensFromKeyboard && customSelectChoosesAndRestoresFocus,
   'range inputs disabled before audio load': rangeDisabled,
   'image format preference restores and saves': formatRestored && formatSaved,
   'legacy BPF defaults off': bpfDefaultsOff,
@@ -303,18 +475,31 @@ const checks = {
   'offline decode toggles into fast mode': offlineDecodeStartsStandard && fastDecodeToggleWorks,
   'audio player remains visible in its idle state': permanentPlayerStartsIdle,
   'result footer and pagination remain visible when empty': resultFooterStartsPersistent,
+  'receiver live regions avoid duplicate announcements': receiverLiveRegionsAreScoped,
   'navigation starts hidden and toggles safely': navDefaultHidden && navOpens && navCloses,
   '12-cell SNR meter reports dB and resets': meterResponds && meterResets,
   'offline decoder progress remains visible and reports ARIA state': offlineProgressStartsIdle &&
     offlineProgressScans && offlineProgressAdvances && offlineProgressCompletes && offlineProgressReturnsIdle,
+  'live receiver status throttles rows and transitions to next-frame search': receiverPanelProgressThrottles &&
+    receiverSearchesNextConsistently,
+  'complete microphone transmission prompt is eligible only in the safe live state': receiveCompletionEligibility,
+  'receive completion dialog traps focus and Escape safely continues reception':
+    receiveCompletionDialogAccessible && receiveCompletionEscapeContinues && receiveCompletionCancellationCloses,
   'decoded image can be manually reset': decodedResultEnablesReset && decodedResultResets,
+  'live receiver frames append without paginating partial redraws': liveFramesAppend &&
+    livePartialReplacesInPlace && liveFinalReplacesPartial && incompleteFinalKeepsSemanticState &&
+    failedFinalFreezesPreview,
   'multi-frame results paginate with absolute time and partial state': paginationStartsAtFirst && paginationShowsPartialSecond,
   'decoded audio ranges switch to hour formatting': hourRangeFormatting,
   'single decoded frame keeps persistent pagination': singleFrameKeepsPagination,
+  'decoded image filenames use plain seconds': filenameTimesUsePlainSeconds,
   'decoded image metadata is removed from P2': decodedMetadataRemoved,
   'ROWS telemetry is removed from P1': rowsTelemetryRemoved,
   'encoder has a separate page shell': encoderIsSeparate,
   'encoder TX mode lives in collapsed floating settings': encoderSettingsCollapsed,
+  'encoder exposes current mode change entry and progress semantics': encoderModeSummary && encoderProgressAccessible,
+  'timeline and selection handles expose keyboard slider semantics': timelineAccessible,
+  'pages use local fonts and accurately disclose local media handling': fontPrivacy,
   'decoder workspace separates controls and output': decoderWorkspaceStructured,
   'frequency readout annotations are removed from both pages': frequencyReadoutsRemoved,
   'project links are the only footer content': centeredProjectLinks,
