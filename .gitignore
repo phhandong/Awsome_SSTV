@@ -2,3 +2,5 @@ node_modules/
 test-artifacts/
 asset/*
 !asset/fonts/
+.zcode/
+CODE_REVIEW_ISSUES.md
