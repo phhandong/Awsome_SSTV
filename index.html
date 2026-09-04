@@ -4,13 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="浏览器内 SSTV 慢扫描电视解码终端，支持文件与实时接收。">
-  <meta name="theme-color" content="#07110f">
+  <meta name="theme-color" content="#070c0e">
   <title>Awesome SSTV · 解码终端</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Rajdhani:wght@500;600;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="./css/style.css">
-  <link rel="stylesheet" href="./css/radio-console.css">
+  <link rel="stylesheet" href="./css/fonts.css">
+  <link rel="stylesheet" href="./css/main.css">
+  <link rel="stylesheet" href="./css/page-decoder.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 </head>
 <body data-page="decoder">
@@ -45,118 +43,118 @@
       <div>
         <p class="eyebrow"><span></span> RX / SIGNAL RECOVERY</p>
         <h1 id="page-title">SSTV 接收终端</h1>
-        <p>捕获音频载波，校准同步脉冲，在浏览器本地重建图像。</p>
+        <p>捕获音频载波，校准同步脉冲，在浏览器本地重建图像；媒体仅在本机处理，不会上传。</p>
       </div>
     </section>
 
     <section class="panel decoder radio-panel" aria-labelledby="decoder-title">
       <div class="panel-heading">
         <div><span class="panel-index">RX–01</span><h2 id="decoder-title">SIGNAL INPUT</h2></div>
-        <span class="panel-state"><i></i> STANDBY</span>
+        <span id="receiverPanelState" class="panel-state is-standby"><i></i><span>STANDBY</span></span>
       </div>
 
       <div class="decoder-workspace">
         <div id="decoderControls" class="decoder-controls">
-      <div class="input-deck">
-        <div class="console-module upload-module">
-          <!-- <div class="module-label"><span>FILE CHANNEL</span><b>离线音频</b></div> -->
-          <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
-            <span class="upload-glyph" aria-hidden="true">⇧</span>
-            <div class="dropzone-hint"><strong>载入音频</strong><small>WAV / MP3 · 拖放或点击</small></div>
-            <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
-          </div>
-        </div>
-
-        <div class="console-module live-receiver" aria-label="实时信号接收">
-          <div id="offlineDecodeProgress" class="signal-meter-wrap receiver-meter-panel is-idle" title="12 段仪表显示音频信噪比，下方细轨显示解码进度">
-            <div class="signal-meter-label"><span>EST. AUDIO SNR</span><output id="receiverLevelText">-- dB</output></div>
-            <div id="receiverMeter" class="signal-meter" role="progressbar" aria-label="实时估算音频信噪比" aria-valuemin="-10" aria-valuemax="30" aria-valuetext="等待信号">
-              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
-              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
-              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
-              <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
-            </div>
-            <div class="receiver-decode-progress" aria-live="polite" aria-atomic="true">
-              <div class="receiver-decode-head">
-                <span>DECODE</span>
-                <span id="offlineDecodeProgressText">等待解码</span>
-                <output id="offlineDecodeProgressValue">0%</output>
+          <div class="input-deck">
+            <div class="console-module upload-module">
+              <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
+                <span class="upload-glyph" aria-hidden="true">⇧</span>
+                <div class="dropzone-hint"><strong>载入音频</strong><small>WAV / MP3 · 拖放或点击</small></div>
+                <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
               </div>
-              <div id="offlineDecodeProgressBar" class="receiver-decode-track" role="progressbar" aria-label="解码进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="等待解码，0%"><div class="bar"></div></div>
+            </div>
+
+            <div class="console-module live-receiver" aria-label="实时信号接收">
+              <div id="offlineDecodeProgress" class="signal-meter-wrap receiver-meter-panel is-idle" title="12 段仪表显示音频信噪比，下方细轨显示解码进度">
+                <div class="signal-meter-label"><span>EST. AUDIO SNR</span><output id="receiverLevelText">-- dB</output></div>
+                <div id="receiverMeter" class="signal-meter" role="progressbar" aria-label="实时估算音频信噪比" aria-valuemin="-10" aria-valuemax="30" aria-valuetext="等待信号">
+                  <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+                  <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+                  <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+                  <span class="signal-cell"></span><span class="signal-cell"></span><span class="signal-cell"></span>
+                </div>
+                <div class="receiver-decode-progress" aria-live="off">
+                  <div class="receiver-decode-head">
+                    <span>DECODE</span>
+                    <span id="offlineDecodeProgressText">等待解码</span>
+                    <output id="offlineDecodeProgressValue">0%</output>
+                  </div>
+                  <div id="offlineDecodeProgressBar" class="receiver-decode-track" role="progressbar" aria-label="解码进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="等待解码，0%"><div class="bar"></div></div>
+                </div>
+              </div>
+              <div class="receiver-telemetry" role="status" aria-live="polite">
+                <span><small>STATUS</small><strong id="receiverStatus">待机</strong></span>
+                <span><small>MODE</small><strong id="receiverMode">--</strong></span>
+                <span><small>AFC</small><strong id="receiverAfc">--</strong></span>
+              </div>
             </div>
           </div>
-          <div class="receiver-telemetry" role="status" aria-live="polite">
-            <span><small>STATUS</small><strong id="receiverStatus">待机</strong></span>
-            <span><small>MODE</small><strong id="receiverMode">--</strong></span>
-            <span><small>AFC</small><strong id="receiverAfc">--</strong></span>
+
+          <div class="audio-player-wrapper is-idle" id="audioPlayerWrapper">
+            <div class="audio-player-controls">
+              <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放或暂停" disabled>▶</button>
+              <div class="audio-timeline-container" role="slider" tabindex="0" aria-label="音频播放位置" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="播放位置 0:00.0">
+                <canvas id="spectrum" class="audio-spectrum-bg" aria-label="频谱瀑布图"></canvas>
+                <canvas id="audioWaveform" class="audio-waveform" aria-label="音频波形时间轴"></canvas>
+                <span class="audio-player-empty" aria-hidden="true">NO AUDIO BUFFER</span>
+                <div class="audio-timeline-overlay">
+                  <div class="audio-selection" id="audioSelection"><div class="audio-selection-handle audio-selection-start" data-handle="start" role="slider" tabindex="0" aria-label="音频选区起点" aria-orientation="horizontal"></div><div class="audio-selection-handle audio-selection-end" data-handle="end" role="slider" tabindex="0" aria-label="音频选区终点" aria-orientation="horizontal"></div></div>
+                  <div class="audio-playhead" id="audioPlayhead"></div>
+                </div>
+              </div>
+              <div class="audio-range-panel">
+                <div class="audio-time-display"><span id="audioCurrentTime">0:00</span><span class="audio-time-separator">/</span><span id="audioDuration">0:00</span></div>
+                <div class="audio-selection-info">
+                  <span class="range-inputs">
+                    <label>起点 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+                    <label>终点 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
+                  </span>
+                  <button id="resetSelectionBtn" class="btn-link">重置区间</button>
+                </div>
+              </div>
+            </div>
+            <p id="rangeError" class="range-error" role="alert" hidden>范围必须满足 0 ≤ 起点 &lt; 终点 ≤ 音频总时长。</p>
+          </div>
+
+          <div class="control-rack">
+            <div class="decode-options"><span class="opt-hint" id="audioMeta" role="status" aria-live="polite">NO FILE LOADED</span></div>
+          </div>
+
+          <div class="btn-row decode-actions three-actions">
+            <button id="micReceiveBtn" class="btn command-btn receive-command" aria-label="开始接收，本机暂存录音最长 10 分钟" aria-pressed="false" title="接收期间仅在本机暂存录音，最长 10 分钟"><span id="liveIndicator" class="live-indicator" aria-hidden="true"></span><span id="micReceiveLabel">开始接收</span></button>
+            <button id="offlineDecodeBtn" class="btn accent command-btn" disabled aria-label="播放音频并实时解码，会通过扬声器发声" title="按实际速度播放音频并实时解码，会通过扬声器发声"><span id="offlineDecodeIcon" aria-hidden="true">◉</span><span id="offlineDecodeLabel">播放并实时解码</span></button>
+            <label class="fast-decode-toggle" for="fastDecodeMode">
+              <input id="fastDecodeMode" type="checkbox">
+              <span class="fast-decode-check" aria-hidden="true"></span>
+              <span>极速模式</span>
+            </label>
           </div>
         </div>
-      </div>
 
-      <div class="audio-player-wrapper is-idle" id="audioPlayerWrapper">
-        <div class="audio-player-controls">
-          <button id="audioPlayPauseBtn" class="audio-control-btn" aria-label="播放或暂停" disabled>▶</button>
-          <div class="audio-timeline-container">
-            <canvas id="spectrum" class="audio-spectrum-bg" aria-label="频谱瀑布图"></canvas>
-            <canvas id="audioWaveform" class="audio-waveform" aria-label="音频波形时间轴"></canvas>
-            <span class="audio-player-empty" aria-hidden="true">NO AUDIO BUFFER</span>
-            <div class="audio-timeline-overlay">
-              <div class="audio-selection" id="audioSelection"><div class="audio-selection-handle audio-selection-start" data-handle="start"></div><div class="audio-selection-handle audio-selection-end" data-handle="end"></div></div>
-              <div class="audio-playhead" id="audioPlayhead"></div>
+        <div id="decoderOutput" class="result-wrap console-screen is-empty">
+          <div class="result-canvas-stage">
+            <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
+            <span class="result-empty-state" aria-hidden="true">NO DECODED FRAME</span>
+          </div>
+          <div id="resultFrameInfo" class="result-frame-info">
+            <div class="result-audio-range">
+              <span aria-hidden="true">AUDIO</span>
+              <output id="resultAudioRange">--:--.- - --:--.-</output>
+              <strong id="resultIncomplete" class="result-incomplete" hidden>不完整 0%</strong>
+            </div>
+            <nav id="resultPagination" class="result-pagination" aria-label="解码图片翻页">
+              <button id="previousDecodedFrame" type="button" aria-label="上一张解码图片" title="上一张" disabled>‹</button>
+              <output id="decodedPageCount" aria-live="polite" aria-atomic="true">00 / 00</output>
+              <button id="nextDecodedFrame" type="button" aria-label="下一张解码图片" title="下一张" disabled>›</button>
+            </nav>
+            <div class="image-export-tools">
+              <button id="resetDecodedBtn" class="image-reset-btn" type="button" disabled title="重置解码画面" aria-label="重置解码画面"><span aria-hidden="true">↺</span></button>
+              <label class="format-select-wrap" title="图片保存格式"><select id="imageFormat" aria-label="图片保存格式"><option value="png">PNG</option><option value="bmp">BMP</option></select></label>
+              <button id="downloadRecordingBtn" class="recording-download-btn" type="button" disabled hidden title="下载接收录音" aria-label="下载接收录音"><span class="recording-download-wave" aria-hidden="true">≋</span><span aria-hidden="true">⇩</span></button>
+              <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片"><span class="image-save-icon" aria-hidden="true">⇩</span></button>
             </div>
           </div>
-          <div class="audio-range-panel">
-            <div class="audio-time-display"><span id="audioCurrentTime">0:00</span><span class="audio-time-separator">/</span><span id="audioDuration">0:00</span></div>
-            <div class="audio-selection-info">
-              <span class="range-inputs">
-                <label>起点 <input id="decodeStartSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
-                <label>终点 <input id="decodeEndSec" type="number" min="0" step="0.1" value="0" aria-describedby="rangeError" disabled> s</label>
-              </span>
-              <button id="resetSelectionBtn" class="btn-link">重置区间</button>
-            </div>
-          </div>
         </div>
-        <p id="rangeError" class="range-error" role="alert" hidden>范围必须满足 0 ≤ 起点 &lt; 终点 ≤ 音频总时长。</p>
-      </div>
-
-      <div class="control-rack">
-        <div class="decode-options"><span class="opt-hint" id="audioMeta" role="status" aria-live="polite">NO FILE LOADED</span></div>
-      </div>
-
-      <div class="btn-row decode-actions three-actions">
-        <button id="micReceiveBtn" class="btn command-btn receive-command" aria-label="开始接收" aria-pressed="false"><span id="liveIndicator" class="live-indicator" aria-hidden="true"></span><span id="micReceiveLabel">开始接收</span></button>
-        <button id="offlineDecodeBtn" class="btn accent command-btn" disabled aria-label="离线解码上传的音频"><span id="offlineDecodeIcon" aria-hidden="true">◉</span><span id="offlineDecodeLabel">离线解码</span></button>
-        <label class="fast-decode-toggle" for="fastDecodeMode">
-          <input id="fastDecodeMode" type="checkbox">
-          <span class="fast-decode-check" aria-hidden="true"></span>
-          <span>极速模式</span>
-        </label>
-      </div>
-        </div>
-
-      <div id="decoderOutput" class="result-wrap console-screen is-empty">
-        <div class="result-canvas-stage">
-          <canvas id="resultCanvas" width="320" height="256" aria-label="解码结果图像"></canvas>
-          <span class="result-empty-state" aria-hidden="true">NO DECODED FRAME</span>
-        </div>
-        <div id="resultFrameInfo" class="result-frame-info">
-          <div class="result-audio-range">
-            <span aria-hidden="true">AUDIO</span>
-            <output id="resultAudioRange">--:--.- - --:--.-</output>
-            <strong id="resultIncomplete" class="result-incomplete" hidden>不完整 0%</strong>
-          </div>
-          <nav id="resultPagination" class="result-pagination" aria-label="解码图片翻页">
-            <button id="previousDecodedFrame" type="button" aria-label="上一张解码图片" title="上一张" disabled>‹</button>
-            <output id="decodedPageCount" aria-live="polite" aria-atomic="true">00 / 00</output>
-            <button id="nextDecodedFrame" type="button" aria-label="下一张解码图片" title="下一张" disabled>›</button>
-          </nav>
-          <div class="image-export-tools">
-            <button id="resetDecodedBtn" class="image-reset-btn" type="button" disabled title="重置解码画面" aria-label="重置解码画面"><span aria-hidden="true">↺</span></button>
-            <label class="format-select-wrap" title="图片保存格式"><select id="imageFormat" aria-label="图片保存格式"><option value="png">PNG</option><option value="bmp">BMP</option></select></label>
-            <button id="saveImageBtn" class="image-save-btn" disabled title="保存解码图片" aria-label="保存解码图片"><span class="image-save-icon" aria-hidden="true">⇩</span></button>
-          </div>
-        </div>
-      </div>
       </div>
     </section>
   </main>
@@ -203,6 +201,40 @@
       </section>
     </div>
   </aside>
+
+  <div id="receiveCompleteDialog" class="recording-save-layer receive-complete-layer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="receiveCompleteTitle" aria-describedby="receiveCompleteDescription" tabindex="-1" hidden>
+    <section class="recording-save-card receive-complete-card">
+      <div class="recording-save-signal receive-complete-signal" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="recording-save-kicker"><span class="recording-save-dot"></span> SSTV TRANSMISSION ENDED</div>
+      <h2 id="receiveCompleteTitle">图像已完整接收，是否结束接收？</h2>
+      <p id="receiveCompleteDescription">当前 SSTV 传输已结束。继续接收会保持麦克风开启并等待下一张；结束接收会停止麦克风，随后可保存本次录音。</p>
+      <div class="recording-save-meta receive-complete-meta"><span>RECEIVED MODE</span><strong id="receiveCompleteMode">--</strong></div>
+      <div class="recording-save-actions receive-complete-actions">
+        <button id="receiveCompleteContinue" class="recording-dialog-btn secondary" type="button">继续接收</button>
+        <button id="receiveCompleteStop" class="recording-dialog-btn primary" type="button"><span aria-hidden="true">■</span> 结束接收</button>
+      </div>
+      <p class="recording-save-footnote">接收器仍在监听；检测到下一帧时，本提示会自动关闭。</p>
+    </section>
+  </div>
+
+  <div id="recordingSaveDialog" class="recording-save-layer" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="recordingSaveTitle" aria-describedby="recordingSaveDescription" tabindex="-1" hidden>
+    <section class="recording-save-card">
+      <div class="recording-save-signal" aria-hidden="true">
+        <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <div class="recording-save-kicker"><span class="recording-save-dot"></span> RX SESSION COMPLETE</div>
+      <h2 id="recordingSaveTitle">是否保存本次录音？</h2>
+      <p id="recordingSaveDescription">接收期间的原始单声道音频已暂存，可以立即导出为 WAV 文件。</p>
+      <div class="recording-save-meta"><span>CAPTURE LENGTH</span><strong id="recordingSaveDuration">0.0 秒</strong></div>
+      <div class="recording-save-actions">
+        <button id="recordingSaveNo" class="recording-dialog-btn secondary" type="button">否，暂时保留</button>
+        <button id="recordingSaveYes" class="recording-dialog-btn primary" type="button"><span aria-hidden="true">⇩</span> 保存 WAV</button>
+      </div>
+      <p class="recording-save-footnote">选择“否”后，仍可从图片下载按钮左侧下载录音。</p>
+    </section>
+  </div>
 
   <footer class="radio-footer" role="contentinfo">
     <nav aria-label="项目链接"><a href="https://github.com/phhandong/Awsome_SSTV" target="_blank" rel="noopener noreferrer"><svg class="footer-link-icon github-icon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.24c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.38.96.1-.75.4-1.26.74-1.55-2.57-.29-5.27-1.28-5.27-5.68 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.16 1.18a10.94 10.94 0 0 1 5.75 0c2.2-1.49 3.16-1.18 3.16-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.41-2.71 5.38-5.29 5.67.42.36.79 1.06.79 2.14v3.18c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7Z"/></svg>SOURCE</a><a href="./LICENSES/LGPL-3.0-or-later.txt"><svg class="footer-link-icon license-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8M8 17h6"/></svg>LICENSE</a></nav>
