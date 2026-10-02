@@ -60,7 +60,8 @@
               <div class="dropzone small" id="wavDropzone" role="button" tabindex="0" aria-label="上传音频文件">
                 <span class="upload-glyph" aria-hidden="true">⇧</span>
                 <div class="dropzone-hint"><strong>载入音频</strong><small>WAV / MP3 · 拖放或点击</small></div>
-                <input type="file" id="wavInput" accept="audio/*" hidden aria-label="选择音频文件">
+                <!-- iOS WebKit may treat audio/* as video; use explicit extensions and MIME types. -->
+                <input type="file" id="wavInput" accept=".wav,.wave,.mp3,.m4a,.aac,.flac,.ogg,.oga,.opus,.aif,.aiff,.webm,audio/wav,audio/x-wav,audio/mpeg,audio/mp4,audio/aac,audio/flac,audio/ogg,audio/aiff,audio/x-aiff,audio/webm" hidden aria-label="选择音频文件">
               </div>
             </div>
 
