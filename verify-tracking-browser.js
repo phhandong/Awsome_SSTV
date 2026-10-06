@@ -33,7 +33,8 @@ async function decodeFixedProbe() {
   } finally {decoder.destroy();}
 }
 try {
-  for(const prefix of ['/Awsome_SSTV/','/']) {
+  const recordingOnly=process.argv.includes('--recording-ui');
+  for(const prefix of recordingOnly ? ['/Awsome_SSTV/'] : ['/Awsome_SSTV/','/']) {
     release=1;
     const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone']});
     let fetches=0;
@@ -46,6 +47,50 @@ try {
     page.on('pageerror',e=>errors.push(e.message));
     await page.clock.install({time:new Date('2026-10-06T08:00:00Z')});
     await page.goto(base+prefix);
+    if(recordingOnly) {
+      await page.waitForSelector('#micReceiveBtn:not([disabled])');
+      await page.click('#trackTab');
+      assert.equal(await page.isVisible('#trackingImageMount #resultCanvas'),true);
+      await page.click('#trackingReceiveBtn');
+      await page.waitForFunction(()=>document.getElementById('micReceiveBtn').getAttribute('aria-pressed')==='true');
+      await page.click('#trackingReceiveBtn');
+      await page.waitForFunction(()=>!document.getElementById('recordingSaveDialog').hidden);
+      await page.click('#recordingSaveNo');
+      await page.waitForFunction(()=>!document.getElementById('trackingRecording').hidden && !document.getElementById('trackingClearRecording').disabled);
+      assert.match(await page.textContent('#trackingRecordingSummary'),/已暂存录音.*秒/);
+      await page.evaluate(async()=>{
+        const app=await import('./js/app.js');
+        app.beginReceiverFrame({frameId:999,width:8,height:4,mode:{name:'TEST'}});
+        const pixels=new Uint8ClampedArray(8*2*4);
+        for(let i=0;i<pixels.length;i+=4) pixels.set([20,180,60,255],i);
+        app.applyReceiverFramePatch({frameId:999,y:0,rowCount:2,pixels,rows:2,totalRows:4});
+        window.testSharedCanvas=document.getElementById('resultCanvas');
+      });
+      const checkPixels=()=>page.evaluate(()=>Array.from(document.getElementById('resultCanvas').getContext('2d').getImageData(0,0,1,1).data));
+      assert.deepEqual(await checkPixels(),[20,180,60,255],'live patches rendered in tracker');
+      await page.click('#receiveTab');
+      assert.equal(await page.isVisible('#receiveView #resultCanvas'),true);
+      await page.click('#trackTab');
+      assert.equal(await page.evaluate(()=>window.testSharedCanvas===document.querySelector('#trackingImageMount #resultCanvas')),true);
+      assert.deepEqual(await checkPixels(),[20,180,60,255],'same canvas survives view switch');
+      const [download]=await Promise.all([page.waitForEvent('download'),page.click('#trackingDownloadRecording')]);
+      assert.match(download.suggestedFilename(),/\.wav$/);
+      await page.click('#trackingClearRecording');
+      await page.waitForFunction(()=>document.getElementById('trackingRecording').hidden);
+      assert.deepEqual(await checkPixels(),[20,180,60,255],'clearing audio preserves images');
+      await page.click('#trackingReceiveBtn');
+      await page.waitForFunction(()=>document.getElementById('micReceiveBtn').getAttribute('aria-pressed')==='true');
+      await page.click('#trackingReceiveBtn');
+      await page.waitForFunction(()=>!document.getElementById('recordingSaveDialog').hidden);
+      await page.click('#recordingSaveNo');
+      await page.evaluate(()=>scrollTo(0,0));
+      await page.screenshot({path:'test-artifacts/tracking-recording-ui.png',fullPage:true});
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      assert.deepEqual(errors,[]);
+      await context.close();
+      console.log('PASS recording UI: retain → download → clear → record again; shared live image and pixels preserved across view changes');
+      continue;
+    }
     await page.waitForFunction(()=>document.getElementById('orbitDataStatus').textContent.includes('已更新'));
     assert.equal(fetches,1);
     await page.click('#trackTab');

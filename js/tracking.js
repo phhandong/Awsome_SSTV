@@ -12,6 +12,9 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   try { fallback = localStorage; } catch (_) { fallback = null; }
   const store = new TrackingStore(globalThis.indexedDB, fallback);
   const source = new EphemerisSource(store, parseElements);
+  // One live canvas and one set of image/recording controls shared by both views.
+  const decodedOutput = $('decoderOutput');
+  const decodedOutputHome = decodedOutput.parentElement;
   let records = [], selected = 'celestrak:25544', observer = null, position = null, prediction = null;
   let pose = null, active = false, generation = 0, worker = null, workerFailed = false, ready = false;
   let poseMessage = '', lastPredict = 0, locationGeneration = 0, drawFrame = null, lastDraw = 0;
@@ -99,6 +102,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   }
   function showView(tracking) {
     active = tracking;
+    (tracking ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput);
     $('receiveView').hidden = tracking; $('trackView').hidden = !tracking;
     for (const [id, chosen] of [['receiveTab', !tracking], ['trackTab', tracking]]) {
       $(id).setAttribute('aria-selected', String(chosen)); $(id).tabIndex = chosen ? 0 : -1;
@@ -163,6 +167,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('orientationStatus').textContent = '姿态已关闭';
   });
   $('trackingReceiveBtn').addEventListener('click', () => { $('micReceiveBtn').click(); syncReceiver(); });
+  $('trackingDownloadRecording').addEventListener('click', () => $('downloadRecordingBtn').click());
   $('trackingFileStop').addEventListener('click', () => { $('offlineDecodeBtn').click(); syncReceiver(); });
   function syncReceiver() {
     const state = receiver();
@@ -173,9 +178,13 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     button.disabled = $('micReceiveBtn').disabled;
     button.setAttribute('aria-pressed', String(state.micActive));
     $('trackingFileStop').hidden = !state.fileActive;
+    $('trackingRecording').hidden = !state.hasRecording;
+    $('trackingRecordingSummary').textContent = state.hasRecording ? `已暂存录音 · ${state.recordingSeconds.toFixed(1)} 秒` : '暂无暂存录音';
+    $('trackingDownloadRecording').disabled = !state.hasRecording;
+    $('trackingClearRecording').disabled = !state.hasRecording || state.micActive || state.micStarting || state.micStopping;
   }
   const rxObserver = new window.MutationObserver(syncReceiver);
-  for (const id of ['receiverStatus', 'receiverLevelText', 'micReceiveBtn', 'offlineDecodeBtn']) rxObserver.observe($(id), { subtree: true, childList: true, attributes: true, characterData: true });
+  for (const id of ['receiverStatus', 'receiverLevelText', 'micReceiveBtn', 'offlineDecodeBtn', 'downloadRecordingBtn']) rxObserver.observe($(id), { subtree: true, childList: true, attributes: true, characterData: true });
   function renderPosition() {
     $('orbitAz').textContent = position ? degrees(position.azimuth) : '—';
     $('orbitEl').textContent = position ? degrees(position.elevation) : '—';

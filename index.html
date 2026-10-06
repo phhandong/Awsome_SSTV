@@ -179,6 +179,11 @@
         <button id="trackingReceiveBtn" type="button" class="btn">开始接收</button>
         <button id="trackingFileStop" type="button" class="btn" hidden>停止文件解码</button>
       </div>
+      <div id="trackingRecording" class="tracking-recording" hidden>
+        <span><small>LOCAL RECORDING</small><strong id="trackingRecordingSummary">已暂存录音</strong></span>
+        <button id="trackingDownloadRecording" type="button" class="btn">下载录音</button>
+        <button id="trackingClearRecording" type="button" class="btn">清空录音</button>
+      </div>
       <div class="tracking-grid">
         <div class="sky-console">
           <div class="target-heading"><div><span class="tracking-kicker">TARGET / 目标</span><h3 id="trackingTarget">ISS</h3></div><span id="orbitVisibility" class="orbit-badge">等待位置</span></div>
@@ -195,6 +200,10 @@
           <p id="orientationStatus" class="tracking-note" role="status">先平放校准，再抬起手机物理顶部；请远离磁性配件。</p>
         </div>
         <div class="orbit-controls">
+          <section class="tracking-block tracking-image-block" aria-labelledby="trackingImageTitle">
+            <h3 id="trackingImageTitle"><span>RX</span> 实时解码图像</h3>
+            <div id="trackingImageMount"></div>
+          </section>
           <section class="tracking-block" aria-labelledby="targetLabel">
             <h3 id="targetLabel"><span>01</span> 目标与星历</h3>
             <label class="tracking-label" for="satelliteSelect">目标卫星</label>
@@ -300,7 +309,7 @@
         <button id="recordingSaveNo" class="recording-dialog-btn secondary" type="button">否，暂时保留</button>
         <button id="recordingSaveYes" class="recording-dialog-btn primary" type="button"><span aria-hidden="true">⇩</span> 保存 WAV</button>
       </div>
-      <p class="recording-save-footnote">选择“否”后，仍可从图片下载按钮左侧下载录音。</p>
+      <p class="recording-save-footnote">暂存后可在图像下方下载录音；卫星跟踪页也可单独清空录音，继续下一次接收。</p>
     </section>
   </div>
 

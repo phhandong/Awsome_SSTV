@@ -112,6 +112,7 @@ function init() {
   document.getElementById('fastDecodeMode')?.addEventListener('change', updateOfflineDecodeMode);
   document.getElementById('saveImageBtn')?.addEventListener('click', saveDecodedImage);
   document.getElementById('resetDecodedBtn')?.addEventListener('click', () => resetDecodedResult({ announce: true, clearRecording: true }));
+  document.getElementById('trackingClearRecording')?.addEventListener('click', clearSavedRecording);
   document.getElementById('downloadRecordingBtn')?.addEventListener('click', () => {
     if (!state.microphoneRecording) return;
     downloadMicrophoneRecording(state.microphoneRecording);
@@ -1349,6 +1350,16 @@ function updateResultActionButtons() {
   }
 }
 
+export function clearSavedRecording() {
+  if (state.micActive || state.micStarting || state.micStopPromise || !state.microphoneRecording) return;
+  state.microphoneRecording = null;
+  deferredRecordingDialog = false;
+  closeRecordingSaveDialog(false);
+  updateResultActionButtons();
+  setReceiverStatus('录音已清空 · 可开始接收');
+  ui.toast('暂存录音已清空，已解码图片保留', 'success');
+}
+
 function setReceiverStatus(text, stateClass = '') {
   document.getElementById('receiverStatus').textContent = text;
   const indicator = document.getElementById('liveIndicator');
@@ -1389,7 +1400,7 @@ async function startMicrophoneReceiver() {
     return;
   }
   if (state.microphoneRecording) {
-    ui.toast('请先下载并清空已暂存的录音，再开始新的接收', 'error');
+    ui.toast('请先下载已暂存的录音并清空，或直接清空后开始新的接收', 'error');
     document.getElementById('downloadRecordingBtn')?.focus();
     return;
   }
@@ -2122,6 +2133,9 @@ init();
 
 export function getFieldReceiverState() {
   return { micActive: state.micActive, micStarting: state.micStarting,
+    micStopping: !!state.micStopPromise,
+    hasRecording: !!state.microphoneRecording,
+    recordingSeconds: state.microphoneRecording ? state.microphoneRecording.samples.length / state.microphoneRecording.sampleRate : 0,
     fileActive: state.offlineDecodeActive || !!state.realtimeDecode,
     busy: state.micActive || state.micStarting || !!state.micStopPromise || state.isProcessing || state.offlineDecodeActive || !!state.realtimeDecode || !document.getElementById('audioPlayer').paused };
 }
