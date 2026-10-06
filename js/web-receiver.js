@@ -452,6 +452,18 @@ export class WebSSTVDecoder extends EventTarget {
         this.appendMicrophoneRecording(data);
       };
       await this.audioContext.resume();
+      const interrupted = () => {
+        if (this.audioContext === context && this.capture === capture) {
+          this.dispatchEvent(new CustomEvent('input-interrupted', { detail: { sessionId } }));
+        }
+      };
+      for (const track of this.stream.getTracks()) {
+        track.addEventListener?.('ended', interrupted, { once: true });
+        track.addEventListener?.('mute', interrupted, { once: true });
+      }
+      context.addEventListener?.('statechange', () => {
+        if (context.state === 'interrupted') interrupted();
+      });
     } catch (error) {
       try { await this.stopMicrophone(false); } catch (_) {}
       throw error;

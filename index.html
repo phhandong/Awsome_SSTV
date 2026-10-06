@@ -2,13 +2,19 @@
 <html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
   <meta name="description" content="浏览器内 SSTV 慢扫描电视解码终端，支持文件与实时接收。">
   <meta name="theme-color" content="#070c0e">
   <title>Awesome SSTV · 解码终端</title>
   <link rel="stylesheet" href="./css/fonts.css">
   <link rel="stylesheet" href="./css/main.css">
   <link rel="stylesheet" href="./css/page-decoder.css">
+  <link rel="stylesheet" href="./css/tracking.css">
+  <link rel="stylesheet" href="./css/pwa.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
 </head>
 <body data-page="decoder">
@@ -47,7 +53,14 @@
       </div>
     </section>
 
-    <section class="panel decoder radio-panel" aria-labelledby="decoder-title">
+    <div class="field-navigation">
+      <div class="field-tabs" role="tablist" aria-label="工作视图">
+        <button id="receiveTab" type="button" role="tab" aria-selected="true" aria-controls="receiveView">01 / 接收</button>
+        <button id="trackTab" type="button" role="tab" aria-selected="false" aria-controls="trackView" tabindex="-1">02 / 卫星跟踪</button>
+      </div>
+      <output id="satelliteCompact" class="satellite-compact">ISS · 设置位置以预测过境</output>
+    </div>
+    <section id="receiveView" class="panel decoder radio-panel" role="tabpanel" aria-labelledby="receiveTab">
       <div class="panel-heading">
         <div><span class="panel-index">RX–01</span><h2 id="decoder-title">SIGNAL INPUT</h2></div>
         <span id="receiverPanelState" class="panel-state is-standby"><i></i><span>STANDBY</span></span>
@@ -157,6 +170,60 @@
           </div>
         </div>
       </div>
+    </section>
+    <section id="trackView" class="radio-panel tracking-panel" role="tabpanel" aria-labelledby="trackTab" hidden>
+      <div class="panel-heading"><div><span class="panel-index">ORB–01</span><h2>ORBIT / POINTING</h2></div><span class="panel-state"><i></i> LOCAL PREDICTION</span></div>
+      <div class="tracking-rx-bar" aria-label="持续接收状态">
+        <span><small>RX STATUS</small><strong id="trackingRxStatus">待机</strong></span>
+        <span><small>AUDIO SNR</small><strong id="trackingSnr">-- dB</strong></span>
+        <button id="trackingReceiveBtn" type="button" class="btn">开始接收</button>
+        <button id="trackingFileStop" type="button" class="btn" hidden>停止文件解码</button>
+      </div>
+      <div class="tracking-grid">
+        <div class="sky-console">
+          <div class="target-heading"><div><span class="tracking-kicker">TARGET / 目标</span><h3 id="trackingTarget">ISS</h3></div><span id="orbitVisibility" class="orbit-badge">等待位置</span></div>
+          <canvas id="skyPlot" width="640" height="640" role="img" aria-label="天空极坐标图：北方在上，圆心为天顶；青色为卫星轨迹，琥珀色为手机顶部方向"></canvas>
+          <div class="sky-legend"><span>● 卫星 / 轨迹</span><span>◇ 手机顶部</span><span>外圈 0° · 圆心 90°</span></div>
+          <div class="orbit-readouts">
+            <div><small>AZ / 真北方位</small><output id="orbitAz">—</output></div>
+            <div><small>EL / 仰角</small><output id="orbitEl">—</output></div>
+            <div><small>RANGE / 距离</small><output id="orbitRange">—</output></div>
+          </div>
+          <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><output id="pointingAngle">—</output></div>
+          <div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div>
+          <div class="tracking-actions"><button id="orientationEnable" class="btn" type="button">启用姿态</button><button id="orientationCalibrate" class="btn" type="button" disabled>校准方向</button><button id="orientationStop" class="btn-link" type="button" hidden>关闭姿态</button></div>
+          <p id="orientationStatus" class="tracking-note" role="status">先平放校准，再抬起手机物理顶部；请远离磁性配件。</p>
+        </div>
+        <div class="orbit-controls">
+          <section class="tracking-block" aria-labelledby="targetLabel">
+            <h3 id="targetLabel"><span>01</span> 目标与星历</h3>
+            <label class="tracking-label" for="satelliteSelect">目标卫星</label>
+            <select id="satelliteSelect"><option value="celestrak:25544">ISS · 等待星历</option></select>
+            <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新 ISS 星历</button><label class="btn import-orbit" for="orbitFile">导入星历<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label></div>
+            <p id="orbitDataStatus" class="tracking-note" role="status">正在读取本机缓存…</p>
+            <p id="orbitEpoch" class="tracking-note"></p>
+            <p id="storageStatus" class="tracking-note" hidden></p>
+          </section>
+          <section class="tracking-block" aria-labelledby="observerLabel">
+            <h3 id="observerLabel"><span>02</span> 观测位置</h3>
+            <button id="locateObserver" class="btn" type="button">使用当前位置</button>
+            <form id="observerForm" class="observer-form">
+              <label>纬度 °<input id="observerLat" type="number" inputmode="decimal" min="-90" max="90" step="any" required placeholder="31.23"></label>
+              <label>经度 °<input id="observerLon" type="number" inputmode="decimal" min="-180" max="180" step="any" required placeholder="121.47"></label>
+              <label>海拔 m<input id="observerAlt" type="number" inputmode="decimal" min="-1000" max="100000" step="any" placeholder="0（估计）"></label>
+              <button class="btn" type="submit">应用坐标</button>
+            </form>
+            <p id="observerStatus" class="tracking-note" role="status">位置只保存在本机；也可以手动填写。</p>
+          </section>
+          <section class="tracking-block" aria-labelledby="passLabel">
+            <h3 id="passLabel"><span>03</span> 未来 24 小时</h3>
+            <p id="passCountdown" class="pass-countdown">等待轨道预测</p>
+            <div id="passList" class="pass-list">设置目标和位置后显示过境。</div>
+            <p class="tracking-note">时间为本机时区。过境以几何地平线计算，不代表肉眼可见、无遮挡或正在发射 SSTV。</p>
+          </section>
+        </div>
+      </div>
+      <div class="tracking-foot"><span>SGP4 · WMM2025 · TOP EDGE POINTING</span><a href="./LICENSES/tracking-NOTICE.md">算法许可</a><a href="https://deerflow.tech" target="_blank" rel="noopener noreferrer">Created By Deerflow</a></div>
     </section>
   </main>
 

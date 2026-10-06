@@ -10,6 +10,12 @@ import { AudioPlayer } from './audioPlayer.js';
 import { WebSSTVDecoder } from './web-receiver.js';
 import * as ui from './ui.js';
 import { canvasBlob } from './image-export.js';
+import { initTracking } from './tracking.js';
+import { initPwa } from './pwa.js';
+
+let fieldPwa;
+let backgroundDuringMicStart = false;
+let deferredRecordingDialog = false;
 
 const state = {
   mode: null,
@@ -902,6 +908,10 @@ function handlePlaybackChange({ time, isPlaying }) {
 }
 
 function bindReceiverEvents(receiver) {
+  receiver.addEventListener('input-interrupted', () => {
+    if (state.micStarting) backgroundDuringMicStart = true;
+    if (state.micActive) void stopMicrophoneReceiver({ interrupted: true });
+  });
   receiver.addEventListener('searching', () => {
     if (state.micActive || state.micStarting || state.realtimeDecode) {
       updateReceiverSearchingPresentation();
@@ -1386,6 +1396,7 @@ async function startMicrophoneReceiver() {
   cancelReceiveCompletionPrompt({ closeDialog: true, restoreFocus: false });
   state.receiveCompleteLastPromptedKey = null;
   state.micStarting = true;
+  backgroundDuringMicStart = false;
   state.receiverFrameCount = 0;
   setMicrophoneButton(false, true);
   document.getElementById('offlineDecodeBtn').disabled = true;
@@ -1398,6 +1409,10 @@ async function startMicrophoneReceiver() {
       dsp: { ...readDspOptions(), engine: 'mmsstv' },
     });
     state.micActive = true;
+    if (document.hidden || backgroundDuringMicStart) {
+      await stopMicrophoneReceiver({ background: true });
+      return;
+    }
     setMicrophoneButton(true);
     setReceiverStatus('搜索信号 · 本机录音中', 'active');
     setReceiverPanelState('SEARCHING', 'searching');
@@ -1410,10 +1425,11 @@ async function startMicrophoneReceiver() {
   } finally {
     state.micStarting = false;
     updateOfflineDecodeMode();
+    fieldPwa?.refresh();
   }
 }
 
-async function stopMicrophoneReceiver({ limitReached = false, durationSeconds = null } = {}) {
+async function stopMicrophoneReceiver({ limitReached = false, durationSeconds = null, background = false, interrupted = false } = {}) {
   cancelReceiveCompletionPrompt({ closeDialog: true, restoreFocus: false });
   if (!state.webDecoder || (!state.micActive && !state.micStopPromise)) return;
   if (state.micStopPromise) return state.micStopPromise;
@@ -1431,7 +1447,10 @@ async function stopMicrophoneReceiver({ limitReached = false, durationSeconds = 
           capturedAt: new Date(),
         };
         updateResultActionButtons();
-        openRecordingSaveDialog(state.microphoneRecording);
+        if (background || document.hidden) {
+          deferredRecordingDialog = true;
+          if (!document.hidden) { deferredRecordingDialog = false; openRecordingSaveDialog(state.microphoneRecording); }
+        } else openRecordingSaveDialog(state.microphoneRecording);
       } else {
         ui.toast('接收期间没有采集到录音', 'error');
       }
@@ -1444,7 +1463,7 @@ async function stopMicrophoneReceiver({ limitReached = false, durationSeconds = 
       setMicrophoneButton(false);
       updateSnrMeter();
       if (!failed) {
-        setReceiverStatus(limitReached ? '已达上限 · 已停止' : '已停止');
+        setReceiverStatus(interrupted ? '音频输入中断 · 已停止并保留录音' : background ? '离开前台 · 已停止并保留录音' : limitReached ? '已达上限 · 已停止' : '已停止');
         setReceiverPanelState('STANDBY', 'standby');
       }
     }
@@ -2100,3 +2119,23 @@ function toggleTheme() {
 }
 
 init();
+
+export function getFieldReceiverState() {
+  return { micActive: state.micActive, micStarting: state.micStarting,
+    fileActive: state.offlineDecodeActive || !!state.realtimeDecode,
+    busy: state.micActive || state.micStarting || !!state.micStopPromise || state.isProcessing || state.offlineDecodeActive || !!state.realtimeDecode || !document.getElementById('audioPlayer').paused };
+}
+
+fieldPwa = initPwa({ isBusy: () => getFieldReceiverState().busy,
+  isReceiving: () => state.micActive || state.micStarting || !!state.realtimeDecode });
+const fieldTracking = initTracking({ receiver: getFieldReceiverState, onActivity: active => fieldPwa.setTrackingActive(active) });
+export function destroyFieldApp() { fieldTracking?.destroy(); fieldPwa?.destroy(); }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (state.micStarting) backgroundDuringMicStart = true;
+    if (state.micActive) void stopMicrophoneReceiver({ background: true });
+  } else if (deferredRecordingDialog && state.microphoneRecording) {
+    deferredRecordingDialog = false;
+    openRecordingSaveDialog(state.microphoneRecording);
+  }
+});

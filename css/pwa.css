@@ -1,0 +1,7 @@
+body { padding-bottom:env(safe-area-inset-bottom,0px); }
+.radio-topbar { padding-top:env(safe-area-inset-top,0px); min-height:calc(var(--header-h) + env(safe-area-inset-top,0px)); }
+.radio-shell { padding-left:max(16px,env(safe-area-inset-left,0px)); padding-right:max(16px,env(safe-area-inset-right,0px)); }
+.nav-toggle { margin-top:env(safe-area-inset-top,0px); }.rx-settings-fab { margin-bottom:env(safe-area-inset-bottom,0px); }
+.pwa-tools { max-width:1180px; margin:16px auto; padding:0 max(20px,env(safe-area-inset-left,0px)); display:flex; gap:10px 22px; align-items:center; flex-wrap:wrap; color:var(--text-dim); font-size:11px; line-height:1.7; }
+.pwa-tools details { max-width:480px; }.pwa-tools summary { color:var(--accent); cursor:pointer; min-height:34px; padding-top:7px; }.pwa-tools details p { margin:5px 0 10px; }
+.pwa-tools [hidden] { display:none; }.pwa-tools .btn { min-height:44px; }

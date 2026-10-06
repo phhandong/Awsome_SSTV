@@ -23,6 +23,8 @@ global.FileReader = window.FileReader;
 global.localStorage = window.localStorage;
 global.OffscreenCanvas = undefined;
 global.Worker = undefined;
+// No live orbital service calls in the DOM smoke test.
+global.fetch = async () => { throw new Error('offline test'); };
 global.requestAnimationFrame = () => 0;
 
 HTMLCanvasElement.prototype.getContext = function () {
@@ -507,4 +509,6 @@ const checks = {
 };
 
 for (const [name, passed] of Object.entries(checks)) console.log(`${passed ? 'PASS' : 'FAIL'} ${name}`);
+app.destroyFieldApp();
+window.close();
 if (Object.values(checks).some(passed => !passed)) process.exit(1);
