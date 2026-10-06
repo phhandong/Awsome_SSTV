@@ -3,6 +3,7 @@ const D = Math.PI / 180;
 export const wrap = degrees => ((degrees % 360) + 360) % 360;
 export const angleDelta = (a, b) => ((a - b + 540) % 360) - 180;
 const clamp = x => Math.max(-1, Math.min(1, x));
+const GUIDE_KEY = 'sstv.orientationGuideComplete.v1';
 
 export function declinationAt(observer, time = Date.now()) {
   const date = new Date(time);
@@ -39,7 +40,7 @@ export function smoothVector(previous, next, weight) {
 export function pointingGuide(pose, target, now = Date.now()) {
   if (!target) return { text: '等待卫星位置', angle: null };
   if (target.elevation < 0) return { text: '目标在地平线下 · 等待过境', angle: null };
-  if (!pose?.valid || now - pose.time > 2000) return { text: '启用姿态并平放校准后，抬起手机顶部指向卫星', angle: null };
+  if (!pose?.valid || now - pose.time > 2000) return { text: '启用姿态，等待方向就绪后用手机顶部指向卫星', angle: null };
   const a = target.azimuth * D, e = target.elevation * D;
   const vector = [Math.sin(a) * Math.cos(e), Math.cos(a) * Math.cos(e), Math.sin(e)];
   const angle = Math.acos(clamp(vector.reduce((sum, v, i) => sum + v * pose.vector[i], 0))) / D;
@@ -56,13 +57,28 @@ export class PhoneOrientation {
   constructor(onChange) {
     this.onChange = onChange; this.enabled = false; this.offset = null; this.declination = null;
     this.pose = null; this.lastRender = 0; this.sample = null;
+    this.guideComplete = false; this.calibrationSamples = []; this.waitStarted = Date.now();
+    try { this.guideComplete = globalThis.localStorage?.getItem(GUIDE_KEY) === '1'; } catch (_) { /* Storage is optional. */ }
     this.handle = event => this.consume(event);
   }
   setObserver(observer) {
-    try { this.declination = declinationAt(observer); this.invalidate('位置已更新，请平放手机重新校准'); }
+    try { this.declination = declinationAt(observer); this.invalidate('位置已更新，正在自动校正方向…'); }
     catch (error) { this.declination = null; this.invalidate(error.message); }
   }
-  invalidate(message) { this.offset = null; this.pose = null; this.onChange({ valid: false, message }); }
+  invalidate(message) {
+    this.offset = null; this.pose = null; this.calibrationSamples = []; this.waitStarted = Date.now();
+    this.pending(message);
+  }
+  pending(message) {
+    if (this.pendingMessage === message) return;
+    this.pendingMessage = message;
+    this.onChange({ valid: false, message });
+  }
+  rememberGuide() {
+    this.guideComplete = true; this.pendingMessage = null;
+    // Persist onboarding only: an offset belongs to this sensor session.
+    try { globalThis.localStorage?.setItem(GUIDE_KEY, '1'); } catch (_) { /* Continue in memory. */ }
+  }
   async enable() {
     if (!window.isSecureContext) throw new Error('姿态功能需要 HTTPS');
     const api = window.DeviceOrientationEvent;
@@ -71,34 +87,65 @@ export class PhoneOrientation {
     if (typeof api.requestPermission === 'function' && await api.requestPermission() !== 'granted') throw new Error('运动权限未允许，请在 Safari 网站设置中检查权限后重试');
     this.enabled = true;
     this.resume();
-    this.invalidate('请将手机屏幕朝上平放，再点击“校准方向”');
+    this.invalidate(this.guideComplete ? '正在自动校正方向…' : '首次使用：将手机屏幕朝上平放约 2 秒，自动校准后即可抬起指向');
   }
   calibrate() {
     const s = this.sample;
     if (!s || Date.now() - s.time > 2000) throw new Error('尚未收到姿态数据，请检查运动权限');
     if (this.declination == null) throw new Error('请先设置有效观测位置');
     if (Math.abs(s.beta) > 15 || Math.abs(s.gamma) > 15) throw new Error('请将手机屏幕朝上平放后校准');
-    if (!Number.isFinite(s.heading) || s.heading < 0 || s.accuracy < 0 || s.accuracy > 20) throw new Error('指南针数据不可靠，请远离金属和磁性配件后重试');
+    if (!Number.isFinite(s.heading) || s.heading < 0 || !Number.isFinite(s.accuracy) || s.accuracy < 0 || s.accuracy > 20) throw new Error('指南针数据不可靠，请远离金属和磁性配件后重试');
     this.offset = angleDelta(s.heading + this.declination, vectorAngles(topVector(s.alpha, s.beta)).azimuth);
     this.pose = null;
+    this.rememberGuide();
     this.consume(s);
+  }
+  autoCalibrate(sample) {
+    const { time, alpha, beta, gamma, heading, accuracy } = sample;
+    if (!Number.isFinite(heading) || heading < 0 || !Number.isFinite(accuracy) || accuracy < 0 || accuracy > 20) {
+      this.calibrationSamples = [];
+      this.pending('指南针数据不可靠，请远离磁性配件；恢复后将自动校准');
+      return false;
+    }
+    if (Math.abs(beta) > 12 || Math.abs(gamma) > 12) {
+      this.calibrationSamples = [];
+      if (time - this.waitStarted > 2000) this.pending('请将手机屏幕朝上短暂平放，方向将自动恢复，无需点击校准');
+      return false;
+    }
+    const offset = angleDelta(heading + this.declination, vectorAngles(topVector(alpha, beta)).azimuth);
+    const samples = this.calibrationSamples, first = samples[0], last = samples.at(-1);
+    if (last && (time - last.time > 500 || Math.abs(angleDelta(offset, first.offset)) > 5 || Math.abs(angleDelta(heading, first.heading)) > 5)) samples.length = 0;
+    samples.push({ offset, heading, time });
+    this.pending(this.guideComplete ? '正在自动校正方向，请保持平稳…' : '首次校准中：请保持平放约 2 秒，无需点击按钮');
+    if (time - samples[0].time < 2000 || samples.length < 10) return false;
+    // Circular mean keeps 359° / 0° samples adjacent.
+    this.offset = Math.atan2(samples.reduce((sum, s) => sum + Math.sin(s.offset * D), 0), samples.reduce((sum, s) => sum + Math.cos(s.offset * D), 0)) / D;
+    this.calibrationSamples = []; this.pose = null; this.lastRender = 0;
+    this.rememberGuide();
+    return true;
   }
   consume(event) {
     const alpha = event.alpha, beta = event.beta, gamma = event.gamma;
-    if (![alpha, beta, gamma].every(value => typeof value === 'number' && Number.isFinite(value))) return;
+    if (![alpha, beta, gamma].every(value => typeof value === 'number' && Number.isFinite(value))) {
+      if (this.enabled) this.invalidate('姿态数据失效，恢复后将自动校准');
+      return;
+    }
     const now = Date.now();
     const heading = event.webkitCompassHeading ?? event.heading;
     const accuracy = event.webkitCompassAccuracy ?? event.accuracy;
     this.sample = { alpha, beta, gamma, heading, accuracy, time: now };
-    if (this.offset == null || this.declination == null || now - this.lastRender < 1000 / 30) return;
+    if (this.declination == null) { if (this.enabled) this.pending('请先设置有效观测位置，随后自动校准方向'); return; }
+    const initializing = this.offset == null;
+    if (this.offset == null && (!this.enabled || !this.autoCalibrate(this.sample))) return;
+    if (now - this.lastRender < 1000 / 30) return;
     if (typeof heading !== 'number' || !Number.isFinite(heading) || heading < 0 || !Number.isFinite(accuracy) || accuracy < 0) {
-      this.invalidate('指南针数据失效，请平放重新校准'); return;
+      this.invalidate('指南针数据失效，恢复后将自动校准'); return;
     }
     const weight = 1 - Math.exp(-(now - this.lastRender) / 90);
     this.lastRender = now;
     // Refresh the magnetic reference only when flat; tilted compass heading
     // differs between implementations, while alpha/beta track the calibrated ray.
-    if (Math.abs(beta) < 12 && Math.abs(gamma) < 12 && accuracy <= 20) {
+    if (!initializing && Math.abs(beta) < 12 && Math.abs(gamma) < 12 && accuracy <= 20) {
       const desired = angleDelta(heading + this.declination, vectorAngles(topVector(alpha, beta)).azimuth);
       this.offset += angleDelta(desired, this.offset) * weight;
     }
@@ -106,7 +153,7 @@ export class PhoneOrientation {
     this.pose = { valid: true, time: now, vector, ...vectorAngles(vector), roll: gamma, accuracy };
     this.onChange(this.pose);
   }
-  pause() { window.removeEventListener('deviceorientation', this.handle); this.sample = null; this.invalidate('回到前台后请平放手机重新校准'); }
-  resume() { if (this.enabled) { window.removeEventListener('deviceorientation', this.handle); window.addEventListener('deviceorientation', this.handle); } }
+  pause() { window.removeEventListener('deviceorientation', this.handle); this.sample = null; this.invalidate('姿态已暂停，返回前台后自动校正'); }
+  resume() { if (this.enabled) { this.waitStarted = Date.now(); window.removeEventListener('deviceorientation', this.handle); window.addEventListener('deviceorientation', this.handle); } }
   stop() { this.enabled = false; this.pause(); }
 }

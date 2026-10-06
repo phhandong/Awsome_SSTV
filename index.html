@@ -15,7 +15,7 @@
   <link rel="stylesheet" href="./css/page-decoder.css">
   <link rel="stylesheet" href="./css/tracking.css">
   <link rel="stylesheet" href="./css/pwa.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+  <link rel="icon" type="image/svg+xml" href="./icons/satellite.svg">
 </head>
 <body data-page="decoder">
   <div class="ambient-grid" aria-hidden="true"></div>
@@ -36,7 +36,7 @@
 
   <header class="topbar radio-topbar" role="banner">
     <a class="brand" href="./index.html" aria-label="Awesome SSTV 解码首页">
-      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span class="brand-mark" aria-hidden="true"><img src="./icons/satellite.svg" alt="" width="30" height="30"></span>
       <span><strong>AWESOME SSTV</strong><small>Slow Scan Signal Lab</small></span>
     </a>
     <div class="topbar-actions">
@@ -196,8 +196,8 @@
           </div>
           <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><output id="pointingAngle">—</output></div>
           <div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div>
-          <div class="tracking-actions"><button id="orientationEnable" class="btn" type="button">启用姿态</button><button id="orientationCalibrate" class="btn" type="button" disabled>校准方向</button><button id="orientationStop" class="btn-link" type="button" hidden>关闭姿态</button></div>
-          <p id="orientationStatus" class="tracking-note" role="status">先平放校准，再抬起手机物理顶部；请远离磁性配件。</p>
+          <div class="tracking-actions"><button id="orientationEnable" class="btn" type="button">启用姿态</button><button id="orientationCalibrate" class="btn" type="button" disabled>手动校准</button><button id="orientationStop" class="btn-link" type="button" hidden>关闭姿态</button></div>
+          <p id="orientationStatus" class="tracking-note" role="status">启用后自动校准，方向就绪即可用手机物理顶部指向；请远离磁性配件。</p>
         </div>
         <div class="orbit-controls">
           <section class="tracking-block tracking-image-block" aria-labelledby="trackingImageTitle">
@@ -232,7 +232,7 @@
           </section>
         </div>
       </div>
-      <div class="tracking-foot"><span>SGP4 · WMM2025 · TOP EDGE POINTING</span><a href="./LICENSES/tracking-NOTICE.md">算法许可</a><a href="https://deerflow.tech" target="_blank" rel="noopener noreferrer">Created By Deerflow</a></div>
+      <!-- <div class="tracking-foot"><span>SGP4 · WMM2025 · TOP EDGE POINTING</span><a href="./LICENSES/tracking-NOTICE.md"></div> -->
     </section>
   </main>
 

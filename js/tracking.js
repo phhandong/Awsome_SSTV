@@ -204,7 +204,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('pointingHint').textContent = guide.text;
     $('pointingAngle').textContent = guide.angle == null ? '—' : `${guide.angle.toFixed(1)}°`;
     if (fresh) $('orientationStatus').textContent = `真北已校正 · 指南针精度约 ±${pose.accuracy.toFixed(0)}°${pose.accuracy > 20 ? ' · 请重新校准' : ''}`;
-    else if (orientation.enabled) $('orientationStatus').textContent = pose?.valid ? '姿态数据已暂停，请重新校准' : poseMessage;
+    else if (orientation.enabled) $('orientationStatus').textContent = pose?.valid ? '等待新的姿态数据…' : poseMessage;
   }
   function renderPasses() {
     const list = $('passList'); list.replaceChildren();
