@@ -33,7 +33,7 @@
     "jpeg-js": "^0.4.4",
     "jsdom": "^29.1.1",
     "mpg123-decoder": "^1.0.3",
-    "playwright-core": "^1.62.1",
+    "playwright-core": "^1.63.0",
     "pngjs": "^7.0.0",
     "satellite.js": "6.0.1"
   }
