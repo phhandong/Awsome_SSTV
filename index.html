@@ -55,8 +55,8 @@
 
     <div class="field-navigation">
       <div class="field-tabs" role="tablist" aria-label="工作视图">
-        <button id="receiveTab" type="button" role="tab" aria-selected="true" aria-controls="receiveView">01 / 接收</button>
-        <button id="trackTab" type="button" role="tab" aria-selected="false" aria-controls="trackView" tabindex="-1">02 / 卫星跟踪</button>
+        <button id="receiveTab" type="button" role="tab" aria-selected="true" aria-controls="receiveView">音频接收</button>
+        <button id="trackTab" type="button" role="tab" aria-selected="false" aria-controls="trackView" tabindex="-1">卫星跟踪</button>
       </div>
       <output id="satelliteCompact" class="satellite-compact">ISS · 设置位置以预测过境</output>
     </div>
@@ -178,34 +178,36 @@
         <button id="trackingSettingsOpen" class="btn" type="button" aria-haspopup="dialog" aria-controls="trackingSettings">设置</button>
       </div>
       <section class="frequency-console" aria-label="多普勒接收频率">
-        <div class="frequency-heading"><span>RX / 接收频率</span><span id="frequencyMode">FM</span></div>
+        <div class="frequency-heading"><span>接收频率</span><span id="frequencyMode">FM</span></div>
         <div class="frequency-value"><output id="receiveFrequency">—</output><span>MHz</span></div>
-        <div class="frequency-details"><span id="nominalFrequency">标称 —</span><output id="dopplerShift">频移 —</output></div>
         <p id="frequencyStatus" role="status">设置观测位置后计算多普勒</p>
       </section>
       <div class="tracking-grid">
         <section class="sky-console" aria-label="卫星与手机指向">
-          <canvas id="skyPlot" width="640" height="640" role="img" aria-label="天空极坐标图：北方在上，圆心为天顶；青色为卫星轨迹，琥珀色为手机顶部方向"></canvas>
-          <div class="pointing-readouts">
-            <span id="orbitVisibility" class="orbit-badge">等待位置</span>
-            <div class="orbit-readouts">
-            <div><small>AZ / 真北方位</small><output id="orbitAz">—</output></div>
-            <div><small>EL / 仰角</small><output id="orbitEl">—</output></div>
-            <div><small>RANGE / 距离</small><output id="orbitRange">—</output></div>
+          <div class="tracking-section-heading"><h3>轨迹跟踪</h3><span id="orbitVisibility" class="orbit-badge">等待位置</span></div>
+          <div class="sky-workspace">
+            <div class="sky-plot-stage">
+              <canvas id="skyPlot" width="640" height="640" role="img" aria-label="天空极坐标图：北方在上，圆心为天顶；青色为卫星轨迹，琥珀色为手机顶部方向"></canvas>
+            </div>
+            <div class="pointing-readouts">
+              <div class="orbit-readouts">
+                <div><small>方位角</small><output id="orbitAz">—</output></div>
+                <div><small>仰角</small><output id="orbitEl">—</output></div>
+              </div>
+              <button id="orientationEnable" class="btn" type="button" hidden>开启指向</button>
+              <button id="trackingLocate" class="btn" type="button" aria-haspopup="dialog" aria-controls="trackingSettings">设置位置</button>
+            </div>
           </div>
-            <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><output id="pointingAngle">—</output></div>
-            <button id="orientationEnable" class="btn" type="button">启用姿态</button>
-          </div>
-          <p id="orientationStatus" class="tracking-note" role="status">启用后自动校准，方向就绪即可用手机物理顶部指向；请远离磁性配件。</p>
+          <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><output id="pointingAngle">—</output></div>
         </section>
         <section class="tracking-block tracking-image-block" aria-labelledby="trackingImageTitle">
-          <div class="tracking-image-heading"><h3 id="trackingImageTitle">实时解码图像</h3><button id="trackingImageExpand" class="btn-link" type="button" aria-haspopup="dialog" aria-controls="trackingImageDialog">放大 / 保存</button></div>
+          <div class="tracking-image-heading"><h3 id="trackingImageTitle">实时解码</h3><button id="trackingImageExpand" class="btn-link" type="button" aria-haspopup="dialog" aria-controls="trackingImageDialog"><span aria-hidden="true">⤢</span> 放大 / 保存</button></div>
           <div id="trackingImageMount"></div>
         </section>
       </div>
       <div class="tracking-rx-bar" aria-label="持续接收状态">
-        <span><small>RX STATUS</small><strong id="trackingRxStatus">待机</strong></span>
-        <span><small>AUDIO SNR</small><strong id="trackingSnr">-- dB</strong></span>
+        <span class="tracking-rx-state"><small>接收状态</small><strong id="trackingRxStatus">待机</strong></span>
+        <span><small>信噪比</small><strong id="trackingSnr">-- dB</strong></span>
         <button id="trackingReceiveBtn" type="button" class="btn">开始接收</button>
         <button id="trackingFileStop" type="button" class="btn" hidden="">停止文件解码</button>
       </div>
@@ -233,6 +235,8 @@
         <header><h2 id="trackingSettingsTitle">跟踪与频率设置</h2><button id="trackingSettingsClose" class="btn" type="button">完成</button></header>
         <div class="tracking-dialog-body">
           <section class="tracking-block"><h3 id="trackingTarget">ISS</h3>
+            <div class="frequency-details"><span id="nominalFrequency">标称 —</span><output id="dopplerShift">频移 —</output></div>
+            <p class="tracking-note">卫星距离 <output id="orbitRange">—</output></p>
             <p id="frequencySource" class="tracking-note"></p>
             <p class="tracking-note">频率预设不代表正在发射。射频模式仅作提示，不改变 SSTV 解码设置；显示位数不代表预测精度。</p>
             <form id="bandTuneForm" class="observer-form" hidden><label>频段内目标 MHz<input id="bandTuneMHz" type="text" inputmode="decimal" required></label><button class="btn" type="submit">应用频率</button></form>
@@ -247,7 +251,7 @@
             </form>
             <p id="frequencyError" class="tracking-note is-warning" role="status"></p>
           </section>
-          <section class="tracking-block"><h3>手机姿态</h3><div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div><button id="orientationCalibrate" class="btn" type="button" disabled="">手动校准</button><button id="orientationStop" class="btn-link" type="button" hidden="">关闭姿态</button><p class="tracking-note">青色是卫星轨迹，琥珀色是手机顶部。天空图北方在上、圆心为天顶。方向就绪后用手机物理顶部指向目标。</p></section>
+          <section class="tracking-block"><h3>手机姿态</h3><p id="orientationStatus" class="tracking-note" role="status">启用后自动校准，方向就绪即可用手机物理顶部指向；请远离磁性配件。</p><div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div><button id="orientationCalibrate" class="btn" type="button" disabled="">手动校准</button><button id="orientationStop" class="btn-link" type="button" hidden="">关闭姿态</button><p class="tracking-note">青色是卫星轨迹，琥珀色是手机顶部。天空图北方在上、圆心为天顶。方向就绪后用手机物理顶部指向目标。</p></section>
           <section class="tracking-block" aria-labelledby="targetLabel">
             <h3 id="targetLabel"><span>01</span> 目标与星历</h3>
             <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新星历</button><label class="btn import-orbit" for="orbitFile">导入星历<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label></div>
@@ -352,10 +356,10 @@
       <p id="recordingSaveDescription">接收期间的原始单声道音频已暂存，可以立即导出为 WAV 文件。</p>
       <div class="recording-save-meta"><span>CAPTURE LENGTH</span><strong id="recordingSaveDuration">0.0 秒</strong></div>
       <div class="recording-save-actions">
-        <button id="recordingSaveNo" class="recording-dialog-btn secondary" type="button">否，暂时保留</button>
+        <button id="recordingSaveNo" class="recording-dialog-btn secondary" type="button">保留，稍后处理</button>
         <button id="recordingSaveYes" class="recording-dialog-btn primary" type="button"><span aria-hidden="true">⇩</span> 保存 WAV</button>
       </div>
-      <p class="recording-save-footnote">暂存后可在图像下方下载录音；卫星跟踪页也可单独清空录音，继续下一次接收。</p>
+      <p class="recording-save-footnote">录音已载入「音频接收」，可直接选区、播放或重新解码，无需上传。保存 WAV 后仍可继续处理；刷新页面前请先保存。</p>
     </section>
   </div>
 

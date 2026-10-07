@@ -50,16 +50,44 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   });
   function pruneMissing() { records = records.filter(item => !item.missingFromCatalog || favorites.has(item.id) || item.id === selected); }
   function saveRetained() { return store.set('catalogRetained', retainedCatalog(records, favorites, selected)); }
-  $('trackingSettingsOpen').addEventListener('click', () => settings.showModal());
+  function openSettings(location = false) {
+    settings.showModal();
+    if (location || !observer) {
+      $('observerLabel').scrollIntoView({ block: 'start' });
+      $('locateObserver').focus({ preventScroll: true });
+    }
+  }
+  $('trackingSettingsOpen').addEventListener('click', () => openSettings());
+  $('trackingLocate').addEventListener('click', () => openSettings(true));
   $('trackingSettingsClose').addEventListener('click', () => settings.close());
+  // A full backdrop tap closes a sheet; a drag starting inside never dismisses it.
+  for (const dialog of [settings, imageDialog, $('satelliteDialog')]) {
+    let backdropDown = false;
+    const outside = event => {
+      const box = dialog.getBoundingClientRect();
+      return event.target === dialog && (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom);
+    };
+    dialog.addEventListener('pointerdown', event => { backdropDown = outside(event); });
+    dialog.addEventListener('pointerup', event => { if (backdropDown && outside(event)) dialog.close(); backdropDown = false; });
+    dialog.addEventListener('pointercancel', () => { backdropDown = false; });
+  }
+  const imageStage = decodedOutput.querySelector('.result-canvas-stage');
+  const emptyImageLabel = decodedOutput.querySelector('.result-empty-state');
+  const originalEmptyLabel = emptyImageLabel.textContent;
   function enlargeImage() {
     if (!active || imageDialog.open) return;
     $('trackingImageLargeMount').append(decodedOutput); imageDialog.showModal();
   }
   $('trackingImageExpand').addEventListener('click', enlargeImage);
-  decodedOutput.querySelector('.result-canvas-stage').addEventListener('click', enlargeImage);
+  imageStage.addEventListener('click', enlargeImage);
+  imageStage.addEventListener('keydown', event => {
+    if (active && !imageDialog.open && ['Enter', ' '].includes(event.key)) { event.preventDefault(); enlargeImage(); }
+  });
   $('trackingImageClose').addEventListener('click', () => imageDialog.close());
-  imageDialog.addEventListener('close', () => (active ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput));
+  imageDialog.addEventListener('close', () => {
+    (active ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput);
+    if (active) $('trackingImageExpand').focus();
+  });
 
   function ensureWorker() {
     if (worker || workerFailed) return;
@@ -150,6 +178,9 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   async function setObserver(value, label) {
     validateObserver(value);
     observer = value;
+    $('trackingLocate').hidden = true;
+    $('orientationEnable').hidden = false;
+    document.querySelector('.sky-console').classList.add('has-observer');
     $('observerLat').value = value.latitude;
     $('observerLon').value = value.longitude;
     $('observerAlt').value = value.altitudeEstimated ? '' : value.altitude;
@@ -163,6 +194,10 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     if (settings.open) settings.close();
     picker.close();
     document.body.classList.toggle('is-tracking', tracking);
+    imageStage.tabIndex = tracking ? 0 : -1;
+    if (tracking) { imageStage.setAttribute('role', 'button'); imageStage.setAttribute('aria-label', '放大实时解码图像并保存'); }
+    else { imageStage.removeAttribute('role'); imageStage.removeAttribute('aria-label'); }
+    emptyImageLabel.textContent = tracking ? '等待 SSTV 图像' : originalEmptyLabel;
     (tracking ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput);
     $('receiveView').hidden = tracking; $('trackView').hidden = !tracking;
     for (const [id, chosen] of [['receiveTab', !tracking], ['trackTab', tracking]]) {
@@ -214,10 +249,11 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     }, error => { $('locateObserver').disabled = false; if (requestId === locationGeneration) $('observerStatus').textContent = `定位未成功（${error.code}），可重试或手动填写。`; }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
   });
   $('orientationEnable').addEventListener('click', () => {
+    $('orientationStatus').classList.remove('is-warning');
     const promise = orientation.enable(); // Keep permission request within the user gesture.
     $('orientationEnable').disabled = true;
     promise.then(() => { $('orientationCalibrate').disabled = false; $('orientationStop').hidden = false; })
-      .catch(error => { $('orientationStatus').textContent = error.message; $('orientationEnable').disabled = false; });
+      .catch(error => { $('orientationStatus').textContent = error.message; $('orientationStatus').classList.add('is-warning'); $('orientationEnable').disabled = false; });
   });
   $('orientationCalibrate').addEventListener('click', () => {
     try { orientation.calibrate(); poseMessage = '已校准 · 用手机物理顶部指向目标'; renderPose(); }
@@ -226,6 +262,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   $('orientationStop').addEventListener('click', () => {
     orientation.stop(); $('orientationEnable').disabled = false; $('orientationCalibrate').disabled = true; $('orientationStop').hidden = true;
     $('orientationStatus').textContent = '姿态已关闭';
+    $('orientationStatus').classList.remove('is-warning');
   });
   $('trackingReceiveBtn').addEventListener('click', () => { $('micReceiveBtn').click(); syncReceiver(); });
   $('trackingDownloadRecording').addEventListener('click', () => $('downloadRecordingBtn').click());
@@ -237,12 +274,15 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     const button = $('trackingReceiveBtn');
     button.textContent = $('micReceiveLabel').textContent;
     button.disabled = $('micReceiveBtn').disabled;
+    button.hidden = !!state.fileActive;
     button.setAttribute('aria-pressed', String(state.micActive));
+    button.setAttribute('aria-busy', String(!!(state.micStarting || state.micStopping)));
+    document.querySelector('.tracking-rx-bar').classList.toggle('is-receiving', !!state.micActive);
     $('trackingFileStop').hidden = !state.fileActive;
     $('trackingRecording').hidden = !state.hasRecording;
     $('trackingRecordingSummary').textContent = state.hasRecording ? `已暂存录音 · ${state.recordingSeconds.toFixed(1)} 秒` : '暂无暂存录音';
     $('trackingDownloadRecording').disabled = !state.hasRecording;
-    $('trackingClearRecording').disabled = !state.hasRecording || state.micActive || state.micStarting || state.micStopping;
+    $('trackingClearRecording').disabled = !state.hasRecording || state.micActive || state.micStarting || state.micStopping || state.fileActive;
   }
   const rxObserver = new window.MutationObserver(syncReceiver);
   for (const id of ['receiverStatus', 'receiverLevelText', 'micReceiveBtn', 'offlineDecodeBtn', 'downloadRecordingBtn']) rxObserver.observe($(id), { subtree: true, childList: true, attributes: true, characterData: true });
@@ -251,6 +291,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('orbitEl').textContent = position ? degrees(position.elevation) : '—';
     $('orbitRange').textContent = position ? `${Math.round(position.distance)} km` : '—';
     $('orbitVisibility').textContent = position ? (position.elevation >= 0 ? '地平线上方' : '地平线下方') : observer ? '等待星历' : '等待位置';
+    $('orbitVisibility').classList.toggle('is-visible', !!position && position.elevation >= 0);
     $('satelliteCompact').textContent = position
       ? `${record()?.name || '卫星'} · AZ ${degrees(position.azimuth)} / EL ${degrees(position.elevation)}`
       : `${record()?.name || 'ISS'} · ${observer ? '等待有效星历' : '设置位置以预测过境'}`;
@@ -262,7 +303,8 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('poseEl').textContent = fresh ? degrees(pose.elevation) : '—';
     $('poseRoll').textContent = fresh ? degrees(pose.roll) : '—';
     const guide = pointingGuide(fresh ? pose : null, position);
-    $('pointingHint').textContent = guide.text;
+    $('pointingHint').textContent = !orientation.enabled && $('orientationStatus').classList.contains('is-warning')
+      ? '方向未就绪 · 可按方位角手动指向' : guide.text;
     $('pointingAngle').textContent = guide.angle == null ? '—' : `${guide.angle.toFixed(1)}°`;
     if (fresh) $('orientationStatus').textContent = `真北已校正 · 指南针精度约 ±${pose.accuracy.toFixed(0)}°${pose.accuracy > 20 ? ' · 请重新校准' : ''}`;
     else if (orientation.enabled) $('orientationStatus').textContent = pose?.valid ? '等待新的姿态数据…' : poseMessage;
@@ -299,12 +341,12 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     c.clearRect(0, 0, 640, 640); c.strokeStyle = color('--line-strong'); c.lineWidth = compact ? 3 : 1;
     for (const r of [radius, radius * 2 / 3, radius / 3]) { c.beginPath(); c.arc(center, center, r, 0, Math.PI * 2); c.stroke(); }
     for (let a = 0; a < 360; a += 30) { const angle = a * Math.PI / 180; c.beginPath(); c.moveTo(center + Math.sin(angle) * 16, center - Math.cos(angle) * 16); c.lineTo(center + Math.sin(angle) * radius, center - Math.cos(angle) * radius); c.stroke(); }
-    c.font = `${compact ? 54 : 16}px monospace`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = color('--text-dim');
+    c.font = `${compact ? 40 : 26}px monospace`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = color('--text-dim');
     for (const [text, x, y] of [['N / 北',320,38],['E',604,320],['S',320,603],['W',35,320]]) c.fillText(text,x,y);
     const xy = p => { const r = radius * (90 - Math.max(0, p.elevation)) / 90, a = p.azimuth * Math.PI / 180; return [center + Math.sin(a) * r, center - Math.cos(a) * r]; };
     const next = prediction?.passes.find(pass => pass.set >= Date.now());
     if (next) {
-      c.strokeStyle = color('--accent'); c.lineWidth = compact ? 5 : 2; c.setLineDash(compact ? [12,12] : [5,5]); c.beginPath();
+      c.strokeStyle = color('--accent'); c.lineWidth = compact ? 5 : 3; c.setLineDash([9,9]); c.beginPath();
       next.track.forEach((p,i) => { const [x,y] = xy(p); if (i) c.lineTo(x,y); else c.moveTo(x,y); }); c.stroke(); c.setLineDash([]);
       const [x,y] = xy(next.track[0]); if (!compact) { c.fillStyle = color('--text-dim'); c.font = '12px monospace'; c.fillText(next.ongoingStart ? 'NOW' : 'AOS',x,y-14); }
     }

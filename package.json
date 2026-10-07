@@ -12,6 +12,8 @@
     "test:pwa": "node verify-tracking-browser.js && node verify-satellite-catalog-browser.mjs",
     "test:doppler": "node verify-doppler.mjs",
     "test:field": "node verify-tracking-browser.js --doppler-ui",
+    "test:tracking-layout": "node verify-tracking-layout.mjs",
+    "test:recording-redecode": "node verify-recording-redecode.mjs",
     "verify": "node verify.js",
     "verify:dsp": "node verify-dsp.js",
     "verify:audio": "node verify-audio.js",
@@ -25,7 +27,7 @@
     "test:browser": "node verify-browser.js",
     "test:real": "node verify-real.js",
     "test:real:pd": "node verify-pd-real.js",
-    "test": "npm run verify:offline && npm run test:tracking && npm run test:catalog && npm run verify:audio && npm run verify:security && npm run verify:dsp && npm run verify:snr && npm run verify:stream && npm run verify:multi && npm run verify:robust && npm run verify && npm run test:ui && npm run test:real && npm run test:browser && npm run test:pwa",
+    "test": "npm run verify:offline && npm run test:tracking && npm run test:catalog && npm run verify:audio && npm run verify:security && npm run verify:dsp && npm run verify:snr && npm run verify:stream && npm run verify:multi && npm run verify:robust && npm run verify && npm run test:ui && npm run test:recording-redecode && npm run test:real && npm run test:browser && npm run test:pwa",
     "dump:real": "node dump_result.js"
   },
   "license": "MIT",

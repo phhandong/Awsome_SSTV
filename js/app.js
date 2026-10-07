@@ -22,7 +22,7 @@ const state = {
   sourceImage: null,     // HTMLImageElement / ImageBitmap,用于 encode
   lastPCM: null,         // Float32Array(生成的音频)
   lastWAV: null,         // ArrayBuffer
-  uploadedAudio: null,   // { sampleRate, samples, format } 上传解码后的 PCM
+  uploadedAudio: null,   // { sampleRate, samples, format, source } 文件或本机录音 PCM
   audioUrl: null,
   isProcessing: false,   // 防止重复处理
   audioPlayer: null,     // 交互式音频播放器
@@ -809,7 +809,7 @@ function updateOfflineDecodeMode() {
     .some(id => document.getElementById(id).getAttribute('aria-invalid') === 'true');
   document.getElementById('offlineDecodeIcon').textContent = fast ? '⚡' : '◉';
   document.getElementById('offlineDecodeLabel').textContent = fast ? '极速解码' : '播放并实时解码';
-  button.setAttribute('aria-label', fast ? '极速解码上传的音频' : '播放音频并实时解码，会通过扬声器发声');
+  button.setAttribute('aria-label', fast ? '极速解码当前音频' : '播放音频并实时解码，会通过扬声器发声');
   button.title = fast ? '后台快速处理，不播放音频' : '按实际速度播放音频并实时解码，会通过扬声器发声';
   button.classList.toggle('primary', fast);
   button.classList.toggle('accent', !fast);
@@ -1313,6 +1313,7 @@ export function resetDecodedResult({ announce = false, resetProgress = true, cle
   canvasLabel?.setAttribute('aria-label', '解码结果图像');
   if (clearRecording) {
     state.microphoneRecording = null;
+    clearLoadedRecording();
     closeRecordingSaveDialog(false);
   }
   updateResultActionButtons();
@@ -1331,6 +1332,7 @@ function updateResultActionButtons() {
   const hasFrame = state.decodedFrames.length > 0;
   const hasSavableFrame = hasFrame && activeDecodedFrame()?.livePartial !== true;
   const hasRecording = !!state.microphoneRecording;
+  const hasLoadedRecording = state.uploadedAudio?.source === 'recording';
   const saveImage = document.getElementById('saveImageBtn');
   const reset = document.getElementById('resetDecodedBtn');
   const downloadRecording = document.getElementById('downloadRecordingBtn');
@@ -1340,8 +1342,8 @@ function updateResultActionButtons() {
     saveImage.setAttribute('aria-label', saveImage.title);
   }
   if (reset) {
-    reset.disabled = !hasFrame && !hasRecording;
-    reset.title = hasRecording ? '清空解码画面和接收录音' : '重置解码画面';
+    reset.disabled = !hasFrame && !hasRecording && !hasLoadedRecording;
+    reset.title = hasRecording || hasLoadedRecording ? '清空解码画面和接收录音' : '重置解码画面';
     reset.setAttribute('aria-label', reset.title);
   }
   if (downloadRecording) {
@@ -1351,8 +1353,9 @@ function updateResultActionButtons() {
 }
 
 export function clearSavedRecording() {
-  if (state.micActive || state.micStarting || state.micStopPromise || !state.microphoneRecording) return;
+  if (state.micActive || state.micStarting || state.micStopPromise || state.isProcessing || state.realtimeDecode || !state.microphoneRecording) return;
   state.microphoneRecording = null;
+  clearLoadedRecording();
   deferredRecordingDialog = false;
   closeRecordingSaveDialog(false);
   updateResultActionButtons();
@@ -1462,6 +1465,18 @@ async function stopMicrophoneReceiver({ limitReached = false, durationSeconds = 
           limitDurationSeconds: durationSeconds,
           capturedAt: new Date(),
         };
+        // Reuse the original PCM, without WAV encoding, uploading or resetting live images.
+        const loadId = ++state.audioLoadId;
+        try {
+          await loadAudioSource({ samples: recording.samples, sampleRate: recording.sampleRate,
+            format: '本机录音', source: 'recording' }, loadId);
+        } catch (error) {
+          if (loadId === state.audioLoadId) {
+            state.uploadedAudio = null;
+            state.audioPlayer?.clear();
+            ui.toast('录音已保留，但时间轴加载失败: ' + error.message, 'error');
+          }
+        }
         updateResultActionButtons();
         if (background || document.hidden) {
           deferredRecordingDialog = true;
@@ -1654,12 +1669,12 @@ function setupRecordingSaveDialog() {
     state.microphoneRecording = null;
     closeRecordingSaveDialog();
     updateResultActionButtons();
-    ui.toast('接收录音已保存', 'success');
+    ui.toast('录音已保存，仍可在音频接收页重新解码', 'success');
   });
   no.addEventListener('click', () => {
     closeRecordingSaveDialog();
     updateResultActionButtons();
-    ui.toast('录音已暂存，可稍后下载', 'success');
+    ui.toast('录音已保留，可在音频接收页重新解码', 'success');
   });
   dialog.addEventListener('click', event => {
     if (event.target === dialog) no.click();
@@ -2053,6 +2068,45 @@ export function audioTimeFilenameToken(seconds) {
   return (tenths / 10).toFixed(1);
 }
 
+// Files and microphone captures share one editable audio source. View switches
+// only redraw it; they must not reload the buffer or reset the user's selection.
+async function loadAudioSource(audio, loadId) {
+  if (loadId !== state.audioLoadId) return;
+  state.uploadedAudio = audio;
+  const { samples, sampleRate, format } = audio;
+  await state.audioPlayer.loadAudio(samples, sampleRate);
+  if (loadId !== state.audioLoadId) return;
+  renderSpectrum(samples, sampleRate);
+  const duration = samples.length / sampleRate;
+  for (const id of ['decodeStartSec', 'decodeEndSec']) {
+    document.getElementById(id).disabled = false;
+    document.getElementById(id).max = String(duration);
+  }
+  syncRangeInputs(state.audioPlayer.getSelectionTime());
+  updateOfflineDecodeMode();
+  document.getElementById('audioMeta').textContent = `${format} · ${sampleRate}Hz · ${duration.toFixed(1)}s`;
+  document.getElementById('audioMeta').classList.remove('is-error');
+  updateResultActionButtons();
+}
+
+function clearLoadedRecording() {
+  // Clearing a retained recording must not remove a subsequently loaded file.
+  if (state.uploadedAudio?.source !== 'recording') return;
+  ++state.audioLoadId;
+  if (state.realtimeDecode) stopRealtimeDecode(false);
+  state.uploadedAudio = null;
+  state.audioPlayer?.clear();
+  for (const id of ['decodeStartSec', 'decodeEndSec']) {
+    document.getElementById(id).disabled = true;
+    document.getElementById(id).removeAttribute('max');
+  }
+  document.getElementById('audioMeta').textContent = 'NO FILE LOADED';
+  document.getElementById('audioMeta').classList.remove('is-error');
+  const spectrum = document.getElementById('spectrum');
+  spectrum?.getContext('2d').clearRect(0, 0, spectrum.width, spectrum.height);
+  updateOfflineDecodeMode();
+}
+
 // ---- 音频上传(WAV / MP3 等)----
 async function onAudioFile(file) {
   const loadId = ++state.audioLoadId;
@@ -2074,24 +2128,9 @@ async function onAudioFile(file) {
       },
     });
     if (loadId !== state.audioLoadId) return;
-    state.uploadedAudio = { sampleRate, samples, format };
-
-    // 加载播放器会先显示时间轴，使两个 canvas 都能取得正确尺寸。
-    await state.audioPlayer.loadAudio(samples, sampleRate);
-    renderSpectrum(samples, sampleRate);
-
-    updateOfflineDecodeMode();
+    await loadAudioSource({ sampleRate, samples, format, source: 'file' }, loadId);
+    if (loadId !== state.audioLoadId) return;
     const dur = (samples.length / sampleRate).toFixed(1);
-    document.getElementById('decodeStartSec').disabled = false;
-    document.getElementById('decodeEndSec').disabled = false;
-    const durationSeconds = samples.length / sampleRate;
-    document.getElementById('decodeStartSec').max = String(durationSeconds);
-    document.getElementById('decodeEndSec').max = String(durationSeconds);
-    // 显式同步新音频的完整选区，避免旧文件输入值在异步解码后残留。
-    syncRangeInputs(state.audioPlayer.getSelectionTime());
-    document.getElementById('audioMeta').textContent =
-      `${format} · ${sampleRate}Hz · ${dur}s`;
-    document.getElementById('audioMeta').classList.remove('is-error');
     ui.toast(`${file.name || '音频'} 已加载(${format}, ${sampleRate}Hz, ${dur}s)`, 'success');
   } catch (e) {
     if (loadId !== state.audioLoadId) return;
@@ -2154,7 +2193,13 @@ export function getFieldReceiverState() {
 
 fieldPwa = initPwa({ isBusy: () => getFieldReceiverState().busy,
   isReceiving: () => state.micActive || state.micStarting || !!state.realtimeDecode });
-const fieldTracking = initTracking({ receiver: getFieldReceiverState, onActivity: active => fieldPwa.setTrackingActive(active) });
+const fieldTracking = initTracking({ receiver: getFieldReceiverState, onActivity: active => {
+  fieldPwa.setTrackingActive(active);
+  if (!active && state.uploadedAudio && state.audioPlayer?.samples) {
+    state.audioPlayer.drawWaveform();
+    renderSpectrum(state.uploadedAudio.samples, state.uploadedAudio.sampleRate);
+  }
+} });
 export function destroyFieldApp() { fieldTracking?.destroy(); fieldPwa?.destroy(); }
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
