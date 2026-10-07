@@ -6,7 +6,7 @@ import { chromium } from 'playwright-core';
 
 await mkdir('test-artifacts', {recursive:true});
 const root=process.cwd(), fixture=await readFile('test-fixtures/iss.json','utf8');
-const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.woff2':'font/woff2'};
+const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2'};
 let release=1;
 const server=createServer(async(req,res)=>{
   try {
@@ -34,7 +34,8 @@ async function decodeFixedProbe() {
 }
 try {
   const recordingOnly=process.argv.includes('--recording-ui');
-  for(const prefix of recordingOnly ? ['/Awsome_SSTV/'] : ['/Awsome_SSTV/','/']) {
+  const dopplerOnly=process.argv.includes('--doppler-ui');
+  for(const prefix of recordingOnly || dopplerOnly ? ['/Awsome_SSTV/'] : ['/Awsome_SSTV/','/']) {
     release=1;
     const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone']});
     let fetches=0;
@@ -45,14 +46,63 @@ try {
     });
     const page=await context.newPage(), errors=[];
     page.on('pageerror',e=>errors.push(e.message));
+    if(dopplerOnly) await page.addInitScript(()=>{
+      const NativeWorker=window.Worker;
+      window.Worker=class extends NativeWorker {
+        constructor(url,options) {
+          super(url,options); this.isOrbit=String(url).includes('orbit-worker');
+          if(this.isOrbit) { window.testOrbitWorker=this; this.addEventListener('message',event=>{if(window.dropOrbitMessages) event.stopImmediatePropagation();}); }
+        }
+        postMessage(data,...rest) { if(this.isOrbit) this.testGeneration=data.generation; return super.postMessage(data,...rest); }
+      };
+    });
     await page.clock.install({time:new Date('2026-10-06T08:00:00Z')});
     await page.goto(base+prefix);
-    if(recordingOnly) {
+    if(recordingOnly || dopplerOnly) {
       await page.waitForSelector('#micReceiveBtn:not([disabled])');
       await page.click('#trackTab');
       assert.equal(await page.isVisible('#trackingImageMount #resultCanvas'),true);
+      if(dopplerOnly) {
+        assert.equal(await page.textContent('#receiveFrequency'),'—');
+        await page.click('#trackingSettingsOpen');
+        await page.fill('#observerLat','31.23'); await page.fill('#observerLon','121.47');
+        await page.click('#observerForm button'); await page.click('#trackingSettingsClose');
+        await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent!=='—');
+        assert.match(await page.textContent('#receiveFrequency'),/^437\.\d{6}$/);
+        await page.evaluate(()=>{window.testOrientationAllowed=false;}); await page.click('#orientationEnable');
+        await page.waitForFunction(()=>document.getElementById('orientationStatus').textContent.includes('权限未允许'));
+        assert.notEqual(await page.textContent('#receiveFrequency'),'—','Doppler does not require motion permission');
+        await page.evaluate(()=>{window.dropOrbitMessages=true;}); await page.clock.runFor(6000);
+        assert.equal(await page.textContent('#receiveFrequency'),'—','expired position clears frequency');
+        await page.evaluate(()=>{window.dropOrbitMessages=false;}); await page.clock.runFor(1000);
+        await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent!=='—');
+        await page.evaluate(()=>{const worker=window.testOrbitWorker;worker.dispatchEvent(new MessageEvent('message',{data:{type:'error',generation:worker.testGeneration,message:'测试传播失败'}}));});
+        assert.equal(await page.textContent('#receiveFrequency'),'—'); assert.match(await page.textContent('#frequencyStatus'),/传播失败/);
+        await page.clock.runFor(1000); await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent!=='—');
+        await page.evaluate(()=>{window.micStarts=0;const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.getUserMedia=(...args)=>{window.micStarts++;return original(...args);};});
+      }
       await page.click('#trackingReceiveBtn');
       await page.waitForFunction(()=>document.getElementById('micReceiveBtn').getAttribute('aria-pressed')==='true');
+      if(dopplerOnly) {
+        await page.selectOption('#frequencySelect','iss-sstv-vhf');
+        await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent.startsWith('145.'));
+        await page.click('#trackingSettingsOpen'); await page.click('#frequencyNew');
+        await page.fill('#frequencyName','Test USB band'); await page.fill('#frequencyModeInput','USB');
+        await page.selectOption('#frequencyKind','band'); await page.fill('#frequencyLow','435.000'); await page.fill('#frequencyHigh','435.100');
+        await page.click('#frequencyForm button');
+        await page.waitForFunction(()=>document.getElementById('frequencyForm').hidden);
+        assert.equal(await page.inputValue('#bandTuneMHz'),'435.050000');
+        await page.fill('#bandTuneMHz','436'); await page.click('#bandTuneForm button');
+        await page.waitForFunction(()=>document.getElementById('frequencyError').textContent.includes('频段内'));
+        await page.fill('#bandTuneMHz','435.025'); await page.click('#bandTuneForm button');
+        await page.waitForFunction(()=>document.getElementById('nominalFrequency').textContent.includes('435.025000'));
+        await page.click('#trackingSettingsClose');
+        await page.click('#trackingImageExpand'); assert.equal(await page.isVisible('#trackingImageLargeMount #resultCanvas'),true);
+        await page.click('#trackingImageClose');
+        await page.waitForSelector('#trackingImageMount #resultCanvas');
+        assert.equal(await page.evaluate(()=>window.micStarts),1,'settings, selection and enlargement keep the same microphone');
+        assert.equal(await page.getAttribute('#micReceiveBtn','aria-pressed'),'true');
+      }
       await page.click('#trackingReceiveBtn');
       await page.waitForFunction(()=>!document.getElementById('recordingSaveDialog').hidden);
       await page.click('#recordingSaveNo');
@@ -68,6 +118,13 @@ try {
       });
       const checkPixels=()=>page.evaluate(()=>Array.from(document.getElementById('resultCanvas').getContext('2d').getImageData(0,0,1,1).data));
       assert.deepEqual(await checkPixels(),[20,180,60,255],'live patches rendered in tracker');
+      if(dopplerOnly) {
+        await page.click('#trackingImageExpand');
+        await page.evaluate(async()=>{const app=await import('./js/app.js');app.applyReceiverFramePatch({frameId:999,y:2,rowCount:1,pixels:new Uint8ClampedArray(8*4).fill(255),rows:3,totalRows:4});});
+        assert.equal(await page.evaluate(()=>window.testSharedCanvas===document.querySelector('#trackingImageLargeMount #resultCanvas')),true);
+        assert.equal(await page.evaluate(()=>document.getElementById('resultCanvas').getContext('2d').getImageData(0,2,1,1).data[0]),255,'live updates continue enlarged');
+        await page.click('#trackingImageClose');
+      }
       await page.click('#receiveTab');
       assert.equal(await page.isVisible('#receiveView #resultCanvas'),true);
       await page.click('#trackTab');
@@ -86,6 +143,43 @@ try {
       await page.evaluate(()=>scrollTo(0,0));
       await page.screenshot({path:'test-artifacts/tracking-recording-ui.png',fullPage:true});
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      if(dopplerOnly) {
+        await page.click('#trackingClearRecording');
+        for(const [width,height] of [[390,844],[375,667],[375,550]]) {
+          await page.setViewportSize({width,height}); await page.evaluate(()=>scrollTo(0,0));
+          const boxes=await page.evaluate(()=>['receiveFrequency','skyPlot','trackingImageMount','trackingReceiveBtn'].map(id=>{const r=document.getElementById(id).getBoundingClientRect();return {id,top:r.top,bottom:r.bottom,height:r.height,viewport:innerHeight};}));
+          assert.ok(boxes.every(b=>b.top>=0&&b.bottom<=b.viewport&&b.height>0),JSON.stringify(boxes));
+          assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+          await page.screenshot({path:`test-artifacts/doppler-${width}x${height}.png`});
+        }
+        await page.setViewportSize({width:844,height:390});
+        assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+        await page.setViewportSize({width:390,height:844});
+        await page.waitForFunction(()=>navigator.serviceWorker.ready.then(r=>!!r.active));
+        await page.reload(); await page.click('#trackTab');
+        await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent!=='—');
+        assert.match(await page.textContent('#nominalFrequency'),/435.025000/);
+        await page.click('#trackingSettingsOpen');
+        await page.setInputFiles('#orbitFile',{name:'iss.json',mimeType:'application/json',buffer:Buffer.from(fixture)});
+        await page.waitForFunction(()=>document.getElementById('satelliteSelect').value==='import:25544');
+        assert.match(await page.textContent('#nominalFrequency'),/435.025000/,'same catalog retains its frequency');
+        await page.screenshot({path:'test-artifacts/doppler-settings.png'});
+        await page.click('#trackingSettingsClose');
+        await page.waitForFunction(()=>!!navigator.serviceWorker.controller);
+        await context.setOffline(true); await page.reload(); await page.click('#trackTab');
+        await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent!=='—');
+        assert.match(await page.textContent('#nominalFrequency'),/435.025000/);
+        await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+        assert.equal(await page.textContent('#receiveFrequency'),'—');
+        await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
+        await page.waitForFunction(()=>document.getElementById('receiveFrequency').textContent!=='—');
+        await page.click('#trackingSettingsOpen'); await page.click('#frequencyDelete'); await page.click('#trackingSettingsClose');
+        await page.waitForFunction(()=>document.getElementById('nominalFrequency').textContent.includes('437.550000'));
+        await context.setOffline(false);
+        await page.clock.fastForward(4*86400000);
+        await page.waitForFunction(()=>document.getElementById('frequencyStatus').textContent.includes('星历较旧'));
+        console.log('PASS Doppler UI: bands, viewport fit, live microphone/canvas continuity, persistence, offline and resume');
+      }
       assert.deepEqual(errors,[]);
       await context.close();
       console.log('PASS recording UI: retain → download → clear → record again; shared live image and pixels preserved across view changes');
@@ -94,12 +188,14 @@ try {
     await page.waitForFunction(()=>document.getElementById('orbitDataStatus').textContent.includes('已更新'));
     assert.equal(fetches,1);
     await page.click('#trackTab');
+    await page.click('#trackingSettingsOpen');
     await page.fill('#observerLat','31.23');await page.fill('#observerLon','121.47');
     await page.click('#observerForm button');
     await page.waitForFunction(()=>document.querySelectorAll('.pass-row').length>0);
     assert.notEqual(await page.textContent('#orbitAz'),'—');
     await page.click('#refreshOrbit');
     assert.equal(fetches,1,'manual refresh must respect two hours');
+    await page.click('#trackingSettingsClose');
     await page.evaluate(()=>{window.testOrientationAllowed=false;});
     await page.click('#orientationEnable');
     await page.waitForFunction(()=>document.getElementById('orientationStatus').textContent.includes('权限未允许'));
@@ -107,7 +203,9 @@ try {
     await page.click('#orientationEnable');
     await page.waitForFunction(()=>!document.getElementById('orientationCalibrate').disabled);
     await page.evaluate(()=>{ const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:0,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e); });
+    await page.click('#trackingSettingsOpen');
     await page.click('#orientationCalibrate');
+    await page.click('#trackingSettingsClose');
     await page.waitForFunction(()=>document.getElementById('poseAz').textContent!=='—');
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:`test-artifacts/tracking-${prefix==='/'?'root':'subpath'}-mobile.png`,fullPage:true});
@@ -118,12 +216,14 @@ try {
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:`test-artifacts/tracking-${prefix==='/'?'root':'subpath'}-desktop.png`,fullPage:true});
     const before=await page.inputValue('#satelliteSelect');
+    await page.click('#trackingSettingsOpen');
     await page.setInputFiles('#orbitFile',{name:'bad.json',mimeType:'application/json',buffer:Buffer.from('[{}]')});
     await page.waitForFunction(()=>document.getElementById('orbitDataStatus').textContent.includes('导入失败'));
     assert.equal(await page.inputValue('#satelliteSelect'),before);
     await page.setInputFiles('#orbitFile',{name:'iss.json',mimeType:'application/json',buffer:Buffer.from(fixture)});
     await page.waitForFunction(()=>document.getElementById('satelliteSelect').value==='import:25544');
     await page.waitForFunction(()=>document.getElementById('orbitAz').textContent!=='—');
+    await page.click('#trackingSettingsClose');
     // Encoder page has no orbit Worker: compare its baseline with active tracking.
     const baselinePage=await context.newPage();await baselinePage.goto(base+prefix+'encode.html');
     const baseline=await baselinePage.evaluate(decodeFixedProbe);await baselinePage.close();

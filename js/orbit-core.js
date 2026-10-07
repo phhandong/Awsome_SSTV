@@ -1,7 +1,18 @@
-import { twoline2satrec, json2satrec, propagate, gstime, eciToEcf, ecfToLookAngles } from './vendor/satellite.es.js';
+import { twoline2satrec, json2satrec, propagate, gstime, eciToEcf, ecfToEci, geodeticToEcf, ecfToLookAngles } from './vendor/satellite.es.js';
 
 export const DAY = 86400000;
 export const DEG = Math.PI / 180;
+export const LIGHT_SPEED_KM_S = 299792.458;
+const EARTH_ROTATION = 7.292115e-5;
+// All vectors share the TEME axes. Positive range rate means receding.
+export function radialVelocity(position, velocity, observerPosition) {
+  const range = ['x', 'y', 'z'].map(axis => position[axis] - observerPosition[axis]);
+  const relativeVelocity = [velocity.x + EARTH_ROTATION * observerPosition.y,
+    velocity.y - EARTH_ROTATION * observerPosition.x, velocity.z];
+  const length = Math.hypot(...range);
+  if (!length || ![...range, ...relativeVelocity].every(Number.isFinite)) throw new Error('卫星速度无效');
+  return range.reduce((sum, value, i) => sum + value * relativeVelocity[i], 0) / length;
+}
 export const normalizeDegrees = degrees => ((degrees % 360) + 360) % 360;
 
 function finite(value) { return typeof value === 'number' && Number.isFinite(value); }
@@ -83,9 +94,14 @@ export function lookAt(sat, observer, time) {
   const date = new Date(time);
   const result = propagate(sat, date);
   if (sat.error || !result?.position || !finite(result.position.x)) throw new Error('轨道传播失败，请更新星历或更换目标');
-  const look = ecfToLookAngles({ latitude: observer.latitude * DEG, longitude: observer.longitude * DEG, height: observer.altitude / 1000 }, eciToEcf(result.position, gstime(date)));
+  const gmst = gstime(date);
+  const geodetic = { latitude: observer.latitude * DEG, longitude: observer.longitude * DEG, height: observer.altitude / 1000 };
+  const look = ecfToLookAngles(geodetic, eciToEcf(result.position, gmst));
+  if (!result.velocity) throw new Error('卫星速度无效');
+  const rangeRateKmS = radialVelocity(result.position, result.velocity, ecfToEci(geodeticToEcf(geodetic), gmst));
   if (![look.azimuth, look.elevation, look.rangeSat].every(finite)) throw new Error('卫星坐标无效');
-  return { time, azimuth: normalizeDegrees(look.azimuth / DEG), elevation: look.elevation / DEG, distance: look.rangeSat };
+  return { time, azimuth: normalizeDegrees(look.azimuth / DEG), elevation: look.elevation / DEG, distance: look.rangeSat,
+    rangeRateKmS, dopplerFactor: 1 - rangeRateKmS / LIGHT_SPEED_KM_S };
 }
 
 // Bracket horizon crossings, then bisect to <0.25s. Work is confined to an orbit Worker.

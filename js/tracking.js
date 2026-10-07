@@ -1,6 +1,7 @@
 import { parseElements, validateObserver, DAY } from './orbit-core.js';
 import { TrackingStore, EphemerisSource, REFRESH_INTERVAL } from './tracking-store.js';
 import { PhoneOrientation, pointingGuide } from './orientation.js';
+import { initFrequencyPanel } from './frequency-panel.js';
 
 const $ = id => document.getElementById(id);
 const localTime = time => new Date(time).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -24,6 +25,21 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     renderPose(); scheduleDraw();
   });
   const record = () => records.find(item => item.id === selected);
+  let orbitError = '';
+  const frequency = initFrequencyPanel({ store, catalog: () => String(record()?.catalogId || '25544'),
+    position: () => position, epoch: () => record()?.epoch,
+    unavailable: () => !observer ? '请在设置中填写或获取观测位置' : !record() ? '等待有效星历' : orbitError || '等待实时轨道计算…' });
+  const settings = $('trackingSettings'), imageDialog = $('trackingImageDialog');
+  $('trackingSettingsOpen').addEventListener('click', () => settings.showModal());
+  $('trackingSettingsClose').addEventListener('click', () => settings.close());
+  function enlargeImage() {
+    if (!active || imageDialog.open) return;
+    $('trackingImageLargeMount').append(decodedOutput); imageDialog.showModal();
+  }
+  $('trackingImageExpand').addEventListener('click', enlargeImage);
+  decodedOutput.querySelector('.result-canvas-stage').addEventListener('click', enlargeImage);
+  $('trackingImageClose').addEventListener('click', () => imageDialog.close());
+  imageDialog.addEventListener('close', () => (active ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput));
 
   function ensureWorker() {
     if (worker || workerFailed) return;
@@ -31,19 +47,21 @@ export function initTracking({ receiver, onActivity = () => {} }) {
       worker = new Worker(new URL('./orbit-worker.js', import.meta.url), { type: 'module' });
       worker.onmessage = ({ data }) => {
         if (data.generation !== generation || document.hidden) return;
-        if (data.type === 'position') { position = data.position; renderPosition(); }
+        if (data.type === 'position') { orbitError = ''; position = data.position; renderPosition(); }
         if (data.type === 'passes') { prediction = data.prediction; renderPasses(); }
-        if (data.type === 'error') { position = null; prediction = null; renderPosition(); $('passList').textContent = data.message; }
+        if (data.type === 'error') { orbitError = data.message; position = null; prediction = null; renderPosition(); $('passList').textContent = data.message; }
         scheduleDraw();
       };
       worker.onerror = () => {
         workerFailed = true; worker?.terminate(); worker = null; position = null; prediction = null;
+        orbitError = '轨道计算无法启动，请重新打开应用';
         renderPosition(); $('passList').textContent = '轨道计算无法启动，请重新打开应用';
       };
-    } catch (_) { workerFailed = true; $('passList').textContent = '当前浏览器无法启动轨道计算'; }
+    } catch (_) { workerFailed = true; orbitError = '当前浏览器无法启动轨道计算'; $('passList').textContent = orbitError; frequency.render(); }
   }
   function configure() {
-    generation++; position = null; prediction = null;
+    generation++; position = null; prediction = null; if (!workerFailed) orbitError = '';
+    frequency.choices();
     renderPosition(); renderPasses(); renderData();
     if (!record() || !observer || document.hidden) return;
     ensureWorker(); lastPredict = Date.now();
@@ -57,6 +75,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     if (![...select.options].some(option => option.value === selected)) selected = 'celestrak:25544';
     select.value = selected;
     $('trackingTarget').textContent = record()?.name || 'ISS';
+    frequency.choices();
   }
   function renderData() {
     const item = record();
@@ -102,12 +121,15 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   }
   function showView(tracking) {
     active = tracking;
+    if (imageDialog.open) imageDialog.close();
+    if (settings.open) settings.close();
+    document.body.classList.toggle('is-tracking', tracking);
     (tracking ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput);
     $('receiveView').hidden = tracking; $('trackView').hidden = !tracking;
     for (const [id, chosen] of [['receiveTab', !tracking], ['trackTab', tracking]]) {
       $(id).setAttribute('aria-selected', String(chosen)); $(id).tabIndex = chosen ? 0 : -1;
     }
-    if (tracking) { orientation.resume(); scheduleDraw(); }
+    if (tracking) { window.scrollTo(0, 0); orientation.resume(); scheduleDraw(); }
     onActivity(active); syncReceiver();
   }
   $('receiveTab').addEventListener('click', () => showView(false));
@@ -193,7 +215,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('satelliteCompact').textContent = position
       ? `${record()?.name || '卫星'} · AZ ${degrees(position.azimuth)} / EL ${degrees(position.elevation)}`
       : `${record()?.name || 'ISS'} · ${observer ? '等待有效星历' : '设置位置以预测过境'}`;
-    renderPose(); renderCountdown();
+    frequency.render(); renderPose(); renderCountdown();
   }
   function renderPose() {
     const fresh = pose?.valid && Date.now() - pose.time <= 2000;
@@ -232,29 +254,30 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     if (time - lastDraw < 1000 / 30) { scheduleDraw(); return; }
     lastDraw = time;
     const canvas = $('skyPlot'), c = canvas.getContext('2d'); if (!c) return;
+    const compact = canvas.clientWidth < 200;
     const style = getComputedStyle(document.documentElement), color = key => style.getPropertyValue(key).trim();
     const center = 320, radius = 255;
-    c.clearRect(0, 0, 640, 640); c.strokeStyle = color('--line-strong'); c.lineWidth = 1;
+    c.clearRect(0, 0, 640, 640); c.strokeStyle = color('--line-strong'); c.lineWidth = compact ? 3 : 1;
     for (const r of [radius, radius * 2 / 3, radius / 3]) { c.beginPath(); c.arc(center, center, r, 0, Math.PI * 2); c.stroke(); }
     for (let a = 0; a < 360; a += 30) { const angle = a * Math.PI / 180; c.beginPath(); c.moveTo(center + Math.sin(angle) * 16, center - Math.cos(angle) * 16); c.lineTo(center + Math.sin(angle) * radius, center - Math.cos(angle) * radius); c.stroke(); }
-    c.font = '16px monospace'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = color('--text-dim');
+    c.font = `${compact ? 54 : 16}px monospace`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = color('--text-dim');
     for (const [text, x, y] of [['N / 北',320,38],['E',604,320],['S',320,603],['W',35,320]]) c.fillText(text,x,y);
     const xy = p => { const r = radius * (90 - Math.max(0, p.elevation)) / 90, a = p.azimuth * Math.PI / 180; return [center + Math.sin(a) * r, center - Math.cos(a) * r]; };
     const next = prediction?.passes.find(pass => pass.set >= Date.now());
     if (next) {
-      c.strokeStyle = color('--accent'); c.lineWidth = 2; c.setLineDash([5,5]); c.beginPath();
+      c.strokeStyle = color('--accent'); c.lineWidth = compact ? 5 : 2; c.setLineDash(compact ? [12,12] : [5,5]); c.beginPath();
       next.track.forEach((p,i) => { const [x,y] = xy(p); if (i) c.lineTo(x,y); else c.moveTo(x,y); }); c.stroke(); c.setLineDash([]);
-      const [x,y] = xy(next.track[0]); c.fillStyle = color('--text-dim'); c.font = '12px monospace'; c.fillText(next.ongoingStart ? 'NOW' : 'AOS',x,y-14);
+      const [x,y] = xy(next.track[0]); if (!compact) { c.fillStyle = color('--text-dim'); c.font = '12px monospace'; c.fillText(next.ongoingStart ? 'NOW' : 'AOS',x,y-14); }
     }
-    if (position?.elevation >= 0) { const [x,y] = xy(position); c.fillStyle = color('--accent'); c.beginPath(); c.arc(x,y,7,0,Math.PI*2); c.fill(); c.beginPath(); c.arc(x,y,14,0,Math.PI*2); c.strokeStyle=color('--accent-line'); c.stroke(); }
+    if (position?.elevation >= 0) { const [x,y] = xy(position); c.fillStyle = color('--accent'); c.beginPath(); c.arc(x,y,compact ? 15 : 7,0,Math.PI*2); c.fill(); c.beginPath(); c.arc(x,y,compact ? 25 : 14,0,Math.PI*2); c.strokeStyle=color('--accent-line'); c.stroke(); }
     if (pose?.valid && Date.now() - pose.time <= 2000 && pose.elevation >= 0) {
-      const [x,y] = xy(pose); c.strokeStyle=color('--accent-2'); c.lineWidth=2; c.beginPath(); c.moveTo(x,y-10);c.lineTo(x+10,y);c.lineTo(x,y+10);c.lineTo(x-10,y);c.closePath();c.stroke();
+      const [x,y] = xy(pose), size=compact ? 20 : 10; c.strokeStyle=color('--accent-2'); c.lineWidth=compact ? 5 : 2; c.beginPath(); c.moveTo(x,y-size);c.lineTo(x+size,y);c.lineTo(x,y+size);c.lineTo(x-size,y);c.closePath();c.stroke();
     }
   }
   async function tick() {
     if (document.hidden) return;
     const now = Date.now();
-    if (position && now - position.time > 4000) { position = null; renderPosition(); }
+    if (position && (now - position.time > 4000 || now < position.time)) { orbitError = '轨道结果已过期，等待更新…'; position = null; renderPosition(); }
     if (worker && observer && record()) {
       worker.postMessage({ type: 'tick', generation, time: now });
       if (now - lastPredict >= 60000 || now < lastPredict) { lastPredict = now; worker.postMessage({ type: 'predict', generation, time: now }); }
@@ -265,6 +288,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     if (document.hidden) {
       generation++; worker?.terminate(); worker = null;
       orientation.pause(); position = null;
+      orbitError = '跟踪已暂停，返回前台后更新'; renderPosition();
       if (drawFrame != null) cancelAnimationFrame(drawFrame); drawFrame = null;
     } else { if (orientation.enabled) orientation.resume(); configure(); void refresh(); }
   });
@@ -275,6 +299,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   const timer = setInterval(() => void tick(), 1000);
   const refreshTimer = setInterval(() => void refresh(), REFRESH_INTERVAL);
   const initPromise = (async () => {
+    await frequency.ready;
     const [iss, imports, savedObserver, savedSelection] = await Promise.all(['iss','imports','observer','selected'].map(key => store.get(key)));
     records = [iss, ...(Array.isArray(imports) ? imports : [])].filter(Boolean);
     selected = savedSelection || selected; renderChoices();
