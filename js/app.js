@@ -1395,10 +1395,15 @@ function toggleMicrophoneReceiver() {
 
 async function startMicrophoneReceiver() {
   if (!state.webDecoder || state.micActive || state.micStarting || state.micStopPromise) return;
-  if (state.isProcessing || state.realtimeDecode) {
-    ui.toast('请先停止文件解码，再开始麦克风接收', 'error');
+  if (state.isProcessing) {
+    ui.toast('请先等待文件解码完成，再开始麦克风接收', 'error');
     return;
   }
+  // Mirror onDecode: switching sources stops realtime playback decode
+  // automatically. A stale realtimeDecode (iOS suspends the player's audio
+  // context in background, so it never self-completes) must never block
+  // the microphone path permanently.
+  if (state.realtimeDecode) stopRealtimeDecode(false);
   if (state.microphoneRecording) {
     ui.toast('请先下载已暂存的录音并清空，或直接清空后开始新的接收', 'error');
     document.getElementById('downloadRecordingBtn')?.focus();
@@ -2155,6 +2160,11 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (state.micStarting) backgroundDuringMicStart = true;
     if (state.micActive) void stopMicrophoneReceiver({ background: true });
+    // Background suspends Web Audio on iOS; the rAF-driven push loop in
+    // handlePlaybackChange stops firing, so realtime decode can neither
+    // advance nor self-complete. Stop it like microphone receive instead
+    // of leaving a stale state that blocks the next receive.
+    if (state.realtimeDecode) stopRealtimeDecode(false);
   } else if (deferredRecordingDialog && state.microphoneRecording) {
     deferredRecordingDialog = false;
     openRecordingSaveDialog(state.microphoneRecording);
