@@ -173,7 +173,7 @@
     </section>
     <section id="trackView" class="radio-panel tracking-panel" role="tabpanel" aria-labelledby="trackTab" hidden>
       <div class="tracking-target-bar">
-        <label><span class="sr-only">目标卫星</span><select id="satelliteSelect"><option value="celestrak:25544">ISS · 等待星历</option></select></label>
+        <button id="satelliteSelect" class="btn satellite-select" type="button" value="celestrak:25544" aria-label="选择卫星，当前 ISS" aria-haspopup="dialog" aria-controls="satelliteDialog" aria-expanded="false"><span id="satelliteSelectName">ISS</span><span aria-hidden="true">⌄</span></button>
         <label><span class="sr-only">转发器或下行频率</span><select id="frequencySelect" aria-label="转发器或下行频率"></select></label>
         <button id="trackingSettingsOpen" class="btn" type="button" aria-haspopup="dialog" aria-controls="trackingSettings">设置</button>
       </div>
@@ -214,6 +214,21 @@
         <button id="trackingDownloadRecording" type="button" class="btn">下载录音</button>
         <button id="trackingClearRecording" type="button" class="btn">清空录音</button>
       </div>
+      <dialog id="satelliteDialog" class="tracking-dialog satellite-dialog" aria-labelledby="satelliteDialogTitle">
+        <header><h2 id="satelliteDialogTitle">选择卫星</h2><button id="satelliteDialogClose" class="btn" type="button">完成</button></header>
+        <div class="satellite-search-tools">
+          <label for="satelliteSearch" class="sr-only">搜索卫星名称或 NORAD 编号</label>
+          <input id="satelliteSearch" type="search" placeholder="搜索名称 / NORAD 编号" maxlength="120" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+          <div class="satellite-filters" role="group" aria-label="筛选卫星">
+            <button type="button" data-catalog-filter="all" aria-pressed="true">全部</button>
+            <button type="button" data-catalog-filter="favorites" aria-pressed="false">收藏</button>
+            <button type="button" data-catalog-filter="imports" aria-pressed="false">本地导入</button>
+          </div>
+          <p id="satelliteCatalogStatus" class="tracking-note">首次进入跟踪页时检查自动目录。</p>
+          <p id="satelliteResultStatus" class="tracking-note" role="status"></p>
+        </div>
+        <ul id="satelliteResults" class="satellite-results" aria-label="卫星列表"></ul>
+      </dialog>
       <dialog id="trackingSettings" class="tracking-dialog tracking-settings-dialog" aria-labelledby="trackingSettingsTitle">
         <header><h2 id="trackingSettingsTitle">跟踪与频率设置</h2><button id="trackingSettingsClose" class="btn" type="button">完成</button></header>
         <div class="tracking-dialog-body">
@@ -235,8 +250,9 @@
           <section class="tracking-block"><h3>手机姿态</h3><div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div><button id="orientationCalibrate" class="btn" type="button" disabled="">手动校准</button><button id="orientationStop" class="btn-link" type="button" hidden="">关闭姿态</button><p class="tracking-note">青色是卫星轨迹，琥珀色是手机顶部。天空图北方在上、圆心为天顶。方向就绪后用手机物理顶部指向目标。</p></section>
           <section class="tracking-block" aria-labelledby="targetLabel">
             <h3 id="targetLabel"><span>01</span> 目标与星历</h3>
-            <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新 ISS 星历</button><label class="btn import-orbit" for="orbitFile">导入星历<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label></div>
+            <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新星历</button><label class="btn import-orbit" for="orbitFile">导入星历<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label></div>
             <p id="orbitDataStatus" class="tracking-note" role="status">正在读取本机缓存…</p>
+            <p id="catalogDataStatus" class="tracking-note" role="status">首次进入跟踪页时检查业余无线电目录。</p>
             <p id="orbitEpoch" class="tracking-note"></p>
             <p id="storageStatus" class="tracking-note" hidden=""></p>
           </section>

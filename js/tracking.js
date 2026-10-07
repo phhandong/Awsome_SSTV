@@ -1,5 +1,7 @@
 import { parseElements, validateObserver, DAY } from './orbit-core.js';
-import { TrackingStore, EphemerisSource, REFRESH_INTERVAL } from './tracking-store.js';
+import { TrackingStore, EphemerisSource, CatalogSource, REFRESH_INTERVAL } from './tracking-store.js';
+import { ISS_ID, mergeCatalog, retainedCatalog } from './tracking-catalog.js';
+import { initSatellitePicker } from './satellite-picker.js';
 import { PhoneOrientation, pointingGuide } from './orientation.js';
 import { initFrequencyPanel } from './frequency-panel.js';
 
@@ -13,10 +15,12 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   try { fallback = localStorage; } catch (_) { fallback = null; }
   const store = new TrackingStore(globalThis.indexedDB, fallback);
   const source = new EphemerisSource(store, parseElements);
+  const catalogSource = new CatalogSource(store, parseElements);
   // One live canvas and one set of image/recording controls shared by both views.
   const decodedOutput = $('decoderOutput');
   const decodedOutputHome = decodedOutput.parentElement;
   let records = [], selected = 'celestrak:25544', observer = null, position = null, prediction = null;
+  let favorites = new Set(), catalogStarted = false, catalogLoading = false, refreshPending = null;
   let pose = null, active = false, generation = 0, worker = null, workerFailed = false, ready = false;
   let poseMessage = '', lastPredict = 0, locationGeneration = 0, drawFrame = null, lastDraw = 0;
   const orientation = new PhoneOrientation(value => {
@@ -30,6 +34,22 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     position: () => position, epoch: () => record()?.epoch,
     unavailable: () => !observer ? '请在设置中填写或获取观测位置' : !record() ? '等待有效星历' : orbitError || '等待实时轨道计算…' });
   const settings = $('trackingSettings'), imageDialog = $('trackingImageDialog');
+  const picker = initSatellitePicker({
+    state: () => ({ records, selected, favorites, loading: catalogLoading, status: $('catalogDataStatus').textContent }),
+    select(id) {
+      selected = id;
+      pruneMissing();
+      renderChoices(); configure();
+      void store.set('selected', selected); void saveRetained();
+    },
+    favorite(id) {
+      if (favorites.has(id)) favorites.delete(id); else favorites.add(id);
+      pruneMissing();
+      picker.render(); void store.set('favorites', [...favorites]); void saveRetained(); renderData();
+    }
+  });
+  function pruneMissing() { records = records.filter(item => !item.missingFromCatalog || favorites.has(item.id) || item.id === selected); }
+  function saveRetained() { return store.set('catalogRetained', retainedCatalog(records, favorites, selected)); }
   $('trackingSettingsOpen').addEventListener('click', () => settings.showModal());
   $('trackingSettingsClose').addEventListener('click', () => settings.close());
   function enlargeImage() {
@@ -68,14 +88,12 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     worker?.postMessage({ type: 'configure', generation, record: record(), observer, time: lastPredict });
   }
   function renderChoices() {
-    const select = $('satelliteSelect');
-    select.replaceChildren();
-    if (!records.some(item => item.id === 'celestrak:25544')) select.add(new window.Option('ISS · 等待星历', 'celestrak:25544'));
-    for (const item of records) select.add(new window.Option(`${item.name} · ${item.source === 'import' ? '本地导入' : '自动更新'}`, item.id));
-    if (![...select.options].some(option => option.value === selected)) selected = 'celestrak:25544';
-    select.value = selected;
+    if (selected !== ISS_ID && !records.some(item => item.id === selected)) selected = ISS_ID;
+    const button = $('satelliteSelect'); button.value = selected;
+    $('satelliteSelectName').textContent = record()?.name || 'ISS';
+    button.setAttribute('aria-label', `选择卫星，当前 ${record()?.name || 'ISS'}`);
     $('trackingTarget').textContent = record()?.name || 'ISS';
-    frequency.choices();
+    frequency.choices(); picker.render();
   }
   function renderData() {
     const item = record();
@@ -83,31 +101,51 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     const old = item && Date.now() - item.epoch > 72 * 3600000;
     const future = item && item.epoch > Date.now() + DAY;
     $('orbitEpoch').textContent = item
-      ? `${old ? '⚠ 数据较旧 · ' : future ? '⚠ 历元在未来，请检查时间 · ' : ''}历元 ${localTime(item.epoch)}；${item.source === 'import' ? '导入' : '获取'} ${localTime(item.fetchedAt)}。${item.source === 'import' ? '此目标需手动更新。' : ''}`
+      ? `${item.missingFromCatalog ? '⚠ 未在最新目录中 · ' : ''}${old ? '⚠ 数据较旧 · ' : future ? '⚠ 历元在未来，请检查时间 · ' : ''}历元 ${localTime(item.epoch)}；${item.source === 'import' ? '导入' : '获取'} ${localTime(item.fetchedAt)}。${item.source === 'import' ? '此目标需手动更新。' : ''}`
       : '暂无可用星历；联网更新 ISS 或导入本地文件。';
-    $('orbitEpoch').classList.toggle('is-warning', !!old || !!future);
+    $('orbitEpoch').classList.toggle('is-warning', !!old || !!future || !!item?.missingFromCatalog);
     $('storageStatus').hidden = store.persistent;
     $('storageStatus').textContent = '浏览器持久存储不可用，离线数据可能无法保留；当前会话仍可使用。';
   }
-  async function refresh(manual = false) {
-    if (!ready || document.hidden) return;
-    $('refreshOrbit').disabled = true;
-    $('orbitDataStatus').textContent = '正在检查 ISS 星历…';
+  function refresh(manual = false) {
+    if (!ready || document.hidden) return Promise.resolve();
+    if (refreshPending) return refreshPending;
+    refreshPending = performRefresh(manual).finally(() => { refreshPending = null; });
+    return refreshPending;
+  }
+  async function refreshFeed(feed, catalog, manual) {
+    const status = $(catalog ? 'catalogDataStatus' : 'orbitDataStatus');
+    const label = catalog ? '业余无线电目录' : 'ISS 星历';
+    if (catalog) catalogLoading = true;
+    status.textContent = `正在检查${label}…`; picker.render();
     try {
-      const result = await source.refresh();
-      if (result.record) {
-        const previous = records.find(item => item.id === result.record.id);
-        records = records.filter(item => item.id !== result.record.id).concat(result.record);
-        renderChoices();
-        if (selected === result.record.id && previous?.epoch !== result.record.epoch) configure();
+      const result = await feed.refresh();
+      const previous = record();
+      if (catalog && Array.isArray(result.records)) {
+        records = mergeCatalog(records, result.records, favorites, selected);
+        await saveRetained();
+      } else if (!catalog && result.record) {
+        records = records.filter(item => item.id !== ISS_ID).concat(result.record);
       }
-      const next = (await store.get('lastRequest')) + REFRESH_INTERVAL;
-      $('orbitDataStatus').textContent = result.error
-        ? `${result.error}；${result.record ? '继续使用缓存。' : '可手动导入星历。'}下次联网检查 ${localTime(next)}。`
-        : result.limited ? `${manual ? '尚未到更新间隔。' : ''}ISS 下次检查 ${localTime(next)}。` : 'ISS 星历已更新；每两小时最多请求一次。';
-      $('orbitDataStatus').classList.toggle('is-warning', !!result.error);
-    } catch (error) { $('orbitDataStatus').textContent = `无法读取星历：${error.message}`; }
-    finally { $('refreshOrbit').disabled = false; renderData(); }
+      renderChoices();
+      if (previous?.epoch !== record()?.epoch || previous?.id !== record()?.id) configure();
+      const next = (await store.get(catalog ? 'lastRequest:amateur' : 'lastRequest')) + REFRESH_INTERVAL;
+      const cached = catalog ? result.records?.length : !!result.record;
+      status.textContent = result.error
+        ? `${label}：${result.error}；${cached ? '继续使用缓存。' : '暂无缓存，可在设置中导入星历。'}下次可检查 ${localTime(next)}。`
+        : result.limited ? `${label}：${manual ? '尚未到更新间隔。' : ''}下次可检查 ${localTime(next)}。`
+        : `${label}已更新${catalog ? ` · ${result.records.length} 颗卫星` : ''}；每两小时最多请求一次。`;
+      status.classList.toggle('is-warning', !!result.error);
+    } catch (error) { status.textContent = `${label}读取失败：${error.message}`; status.classList.add('is-warning'); }
+    finally { if (catalog) catalogLoading = false; renderData(); picker.render(); }
+  }
+  async function performRefresh(manual) {
+    $('refreshOrbit').disabled = true;
+    try {
+      const tasks = [refreshFeed(source, false, manual)];
+      if (catalogStarted || active || manual) { catalogStarted = true; tasks.push(refreshFeed(catalogSource, true, manual)); }
+      await Promise.all(tasks);
+    } finally { $('refreshOrbit').disabled = false; }
   }
   async function setObserver(value, label) {
     validateObserver(value);
@@ -123,13 +161,14 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     active = tracking;
     if (imageDialog.open) imageDialog.close();
     if (settings.open) settings.close();
+    picker.close();
     document.body.classList.toggle('is-tracking', tracking);
     (tracking ? $('trackingImageMount') : decodedOutputHome).append(decodedOutput);
     $('receiveView').hidden = tracking; $('trackView').hidden = !tracking;
     for (const [id, chosen] of [['receiveTab', !tracking], ['trackTab', tracking]]) {
       $(id).setAttribute('aria-selected', String(chosen)); $(id).tabIndex = chosen ? 0 : -1;
     }
-    if (tracking) { window.scrollTo(0, 0); orientation.resume(); scheduleDraw(); }
+    if (tracking) { window.scrollTo(0, 0); orientation.resume(); scheduleDraw(); void refresh().then(() => { if (active && !catalogStarted) void refresh(); }); }
     onActivity(active); syncReceiver();
   }
   $('receiveTab').addEventListener('click', () => showView(false));
@@ -140,7 +179,6 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     const next = event.key === 'Home' ? false : event.key === 'End' ? true : !active;
     showView(next); $(next ? 'trackTab' : 'receiveTab').focus();
   });
-  $('satelliteSelect').addEventListener('change', () => { selected = $('satelliteSelect').value; configure(); void store.set('selected', selected); });
   $('refreshOrbit').addEventListener('click', () => void refresh(true));
   $('orbitFile').addEventListener('change', async event => {
     const file = event.target.files?.[0]; if (!file) return;
@@ -152,7 +190,8 @@ export function initTracking({ receiver, onActivity = () => {} }) {
       if (merged.size > 500) throw new Error('本机最多保存 500 颗导入卫星');
       records = records.filter(item => item.source !== 'import').concat([...merged.values()]);
       selected = imported[0].id;
-      await store.set('imports', [...merged.values()]); await store.set('selected', selected);
+      pruneMissing();
+      await store.set('imports', [...merged.values()]); await store.set('selected', selected); await saveRetained();
       renderChoices(); configure(); $('orbitDataStatus').textContent = `已导入 ${imported.length} 颗卫星；本地导入数据需手动更新。`;
     } catch (error) { $('orbitDataStatus').textContent = `导入失败：${error.message}`; }
     finally { event.target.value = ''; }
@@ -300,12 +339,17 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   const refreshTimer = setInterval(() => void refresh(), REFRESH_INTERVAL);
   const initPromise = (async () => {
     await frequency.ready;
-    const [iss, imports, savedObserver, savedSelection] = await Promise.all(['iss','imports','observer','selected'].map(key => store.get(key)));
-    records = [iss, ...(Array.isArray(imports) ? imports : [])].filter(Boolean);
-    selected = savedSelection || selected; renderChoices();
+    const [iss, imports, savedObserver, savedSelection, catalog, retained, savedFavorites] = await Promise.all(['iss','imports','observer','selected','amateur','catalogRetained','favorites'].map(key => store.get(key)));
+    favorites = new Set(Array.isArray(savedFavorites) ? savedFavorites.filter(id => typeof id === 'string') : []);
+    selected = savedSelection || selected;
+    records = mergeCatalog([iss, ...(Array.isArray(imports) ? imports : []), ...(Array.isArray(retained) ? retained : [])].filter(Boolean),
+      Array.isArray(catalog) ? catalog : [], favorites, selected);
+    if (Array.isArray(catalog) && catalog.length) $('catalogDataStatus').textContent = `已读取 ${catalog.length} 颗卫星的本机目录缓存；进入跟踪页后检查更新。`;
+    else if (navigator.onLine === false) $('catalogDataStatus').textContent = '当前离线，暂无自动目录缓存；可在设置中导入星历。';
+    renderChoices();
     if (savedObserver) { try { await setObserver(savedObserver, '已保存位置'); } catch (_) { $('observerStatus').textContent = '已保存位置无效，请重新设置'; } }
     ready = true; renderData(); configure(); await refresh();
   })().catch(error => { ready = true; $('orbitDataStatus').textContent = `初始化失败，可重新导入：${error.message}`; });
   return { ready: initPromise, isActive: () => active, syncReceiver,
-    destroy() { clearInterval(timer); clearInterval(refreshTimer); worker?.terminate(); orientation.stop(); rxObserver.disconnect(); themeObserver.disconnect(); } };
+    destroy() { clearInterval(timer); clearInterval(refreshTimer); worker?.terminate(); orientation.stop(); picker.destroy(); rxObserver.disconnect(); themeObserver.disconnect(); } };
 }

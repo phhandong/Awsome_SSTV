@@ -1,11 +1,14 @@
 export const REFRESH_INTERVAL = 2 * 60 * 60 * 1000;
 export const ISS_URL = 'https://celestrak.org/NORAD/elements/gp.php?CATNR=25544&FORMAT=JSON';
+export const AMATEUR_URL = 'https://celestrak.org/NORAD/elements/gp.php?GROUP=amateur&FORMAT=JSON';
 
 // All persistent writes are best-effort. A failed store never disables the receiver.
 export class TrackingStore {
   constructor(indexedDB = globalThis.indexedDB, fallback) {
     if (fallback === undefined) { try { fallback = globalThis.localStorage; } catch (_) { fallback = null; } }
     this.indexedDB = indexedDB; this.fallback = fallback; this.memory = new Map(); this.persistent = true;
+    this.unpersisted = new Set();
+    this.claims = Promise.resolve();
   }
   async open() {
     if (this.opening) return this.opening;
@@ -20,9 +23,13 @@ export class TrackingStore {
     return this.opening;
   }
   async get(key) {
+    if (this.unpersisted.has(key)) return this.memory.get(key);
     const db = await this.open();
     if (db) {
-      try { return await new Promise((resolve, reject) => { const r = db.transaction('state').objectStore('state').get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); }); }
+      try {
+        const value = await new Promise((resolve, reject) => { const r = db.transaction('state').objectStore('state').get(key); r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error); });
+        if (value !== undefined) return value;
+      }
       catch (_) { this.persistent = false; }
     }
     try { return JSON.parse(this.fallback?.getItem(`sstv.tracking.${key}`) || 'null') ?? this.memory.get(key); }
@@ -30,38 +37,45 @@ export class TrackingStore {
   }
   async set(key, value) {
     this.memory.set(key, value);
+    this.unpersisted.add(key);
     const db = await this.open();
     if (db) {
       try {
         await new Promise((resolve, reject) => { const tx = db.transaction('state', 'readwrite'); tx.objectStore('state').put(value, key); tx.oncomplete = resolve; tx.onabort = tx.onerror = () => reject(tx.error); });
+        this.unpersisted.delete(key);
         return;
       } catch (_) { this.persistent = false; }
     }
     try { this.fallback?.setItem(`sstv.tracking.${key}`, JSON.stringify(value)); } catch (_) { /* Session memory remains available. */ }
   }
-  async claimRequest(now) {
+  async claimRequest(now, key = 'lastRequest') {
     const db = await this.open();
     if (db) {
       try {
         return await new Promise((resolve, reject) => {
           const tx = db.transaction('state', 'readwrite'), store = tx.objectStore('state');
           let allowed = false;
-          const r = store.get('lastRequest');
-          r.onsuccess = () => { allowed = !Number.isFinite(r.result) || now - r.result >= REFRESH_INTERVAL; if (allowed) store.put(now, 'lastRequest'); };
+          const r = store.get(key);
+          r.onsuccess = () => { allowed = !Number.isFinite(r.result) || now - r.result >= REFRESH_INTERVAL; if (allowed) store.put(now, key); };
           tx.oncomplete = () => resolve(allowed); tx.onabort = tx.onerror = () => reject(tx.error);
         });
       } catch (_) { this.persistent = false; }
     }
-    const last = await this.get('lastRequest');
-    if (Number.isFinite(last) && now - last < REFRESH_INTERVAL) return false;
-    await this.set('lastRequest', now);
-    return true;
+    const claim = this.claims.then(async () => {
+      const last = await this.get(key);
+      if (Number.isFinite(last) && now - last < REFRESH_INTERVAL) return false;
+      await this.set(key, now);
+      return true;
+    });
+    this.claims = claim.catch(() => {});
+    return claim;
   }
 }
 
-export class EphemerisSource {
-  constructor(store, parse, fetcher = globalThis.fetch?.bind(globalThis)) {
+class EphemerisFeed {
+  constructor(store, parse, fetcher, feed, { timeoutMs = 15000 } = {}) {
     this.store = store; this.parse = parse; this.fetcher = fetcher; this.pending = null;
+    this.feed = feed; this.timeoutMs = timeoutMs;
   }
   refresh(now = Date.now()) {
     if (this.pending) return this.pending;
@@ -69,20 +83,47 @@ export class EphemerisSource {
     return this.pending;
   }
   async performRefresh(now) {
-    if (!await this.store.claimRequest(now)) return { limited: true, record: await this.store.get('iss') };
+    const { url, cacheKey, requestKey, resultKey, select } = this.feed;
+    if (!await this.store.claimRequest(now, requestKey)) return { limited: true,
+      [resultKey]: await this.store.get(cacheKey), error: await this.store.get(`${requestKey}:error`) || undefined };
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetcher(ISS_URL, { signal: controller.signal, redirect: 'error', cache: 'no-store', credentials: 'omit' });
+      const response = await this.fetcher(url, { signal: controller.signal, redirect: 'error', cache: 'no-store', credentials: 'omit' });
       if (response.status !== 200) throw new Error(`星历服务返回 HTTP ${response.status}`);
       const text = await response.text();
+      if (!/^[\[{]/.test(text.trim())) throw new Error('星历服务未返回 OMM JSON');
       const records = this.parse(text, 'celestrak', now);
-      const record = records.find(item => item.catalogId === '25544');
-      if (!record) throw new Error('返回数据中没有 ISS');
-      await this.store.set('iss', record);
-      return { record };
+      const value = select(records);
+      await this.store.set(cacheKey, value);
+      await this.store.set(`${requestKey}:error`, null);
+      return { [resultKey]: value };
     } catch (error) {
-      return { record: await this.store.get('iss'), error: error.name === 'AbortError' ? '星历请求超时' : error.message };
+      const message = error.name === 'AbortError' ? '星历请求超时' : error.message;
+      await this.store.set(`${requestKey}:error`, message);
+      return { [resultKey]: await this.store.get(cacheKey), error: message };
     } finally { clearTimeout(timeout); }
+  }
+}
+
+export class EphemerisSource extends EphemerisFeed {
+  constructor(store, parse, fetcher = globalThis.fetch?.bind(globalThis), options) {
+    super(store, parse, fetcher, { url: ISS_URL, cacheKey: 'iss', requestKey: 'lastRequest', resultKey: 'record',
+      select(records) {
+        const record = records.find(item => item.catalogId === '25544');
+        if (!record) throw new Error('返回数据中没有 ISS');
+        return record;
+      } }, options);
+  }
+}
+
+export class CatalogSource extends EphemerisFeed {
+  constructor(store, parse, fetcher = globalThis.fetch?.bind(globalThis), options) {
+    super(store, parse, fetcher, { url: AMATEUR_URL, cacheKey: 'amateur', requestKey: 'lastRequest:amateur', resultKey: 'records',
+      select(records) {
+        const catalog = records.filter(item => item.catalogId !== '25544');
+        if (!catalog.length) throw new Error('目录中没有可用的业余无线电卫星');
+        return catalog;
+      } }, options);
   }
 }

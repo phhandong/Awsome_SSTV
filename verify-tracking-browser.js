@@ -5,7 +5,7 @@ import { extname, resolve, relative, isAbsolute } from 'node:path';
 import { chromium } from 'playwright-core';
 
 await mkdir('test-artifacts', {recursive:true});
-const root=process.cwd(), fixture=await readFile('test-fixtures/iss.json','utf8');
+const root=process.cwd(), fixture=await readFile('test-fixtures/iss.json','utf8'), catalogFixture=await readFile('test-fixtures/amateur.json','utf8');
 const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2'};
 let release=1;
 const server=createServer(async(req,res)=>{
@@ -38,8 +38,12 @@ try {
   for(const prefix of recordingOnly || dopplerOnly ? ['/Awsome_SSTV/'] : ['/Awsome_SSTV/','/']) {
     release=1;
     const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone']});
-    let fetches=0;
-    await context.route('https://celestrak.org/**',route=>{fetches++;return route.fulfill({status:200,contentType:'application/json',body:fixture});});
+    let fetches=0, catalogFetches=0;
+    await context.route('https://celestrak.org/**',route=>{
+      const catalog=new URL(route.request().url()).searchParams.get('GROUP')==='amateur';
+      if(catalog) catalogFetches++; else fetches++;
+      return route.fulfill({status:200,contentType:'application/json',body:catalog?catalogFixture:fixture});
+    });
     await context.addInitScript(()=>{
       window.testOrientationAllowed=true;
       window.DeviceOrientationEvent.requestPermission=async()=>window.testOrientationAllowed?'granted':'denied';
@@ -195,6 +199,7 @@ try {
     assert.notEqual(await page.textContent('#orbitAz'),'—');
     await page.click('#refreshOrbit');
     assert.equal(fetches,1,'manual refresh must respect two hours');
+    assert.equal(catalogFetches,1,'directory has its own two-hour request limit');
     await page.click('#trackingSettingsClose');
     await page.evaluate(()=>{window.testOrientationAllowed=false;});
     await page.click('#orientationEnable');
@@ -215,11 +220,11 @@ try {
     await page.setViewportSize({width:1440,height:1000});
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:`test-artifacts/tracking-${prefix==='/'?'root':'subpath'}-desktop.png`,fullPage:true});
-    const before=await page.inputValue('#satelliteSelect');
+    const before=await page.getAttribute('#satelliteSelect','value');
     await page.click('#trackingSettingsOpen');
     await page.setInputFiles('#orbitFile',{name:'bad.json',mimeType:'application/json',buffer:Buffer.from('[{}]')});
     await page.waitForFunction(()=>document.getElementById('orbitDataStatus').textContent.includes('导入失败'));
-    assert.equal(await page.inputValue('#satelliteSelect'),before);
+    assert.equal(await page.getAttribute('#satelliteSelect','value'),before);
     await page.setInputFiles('#orbitFile',{name:'iss.json',mimeType:'application/json',buffer:Buffer.from(fixture)});
     await page.waitForFunction(()=>document.getElementById('satelliteSelect').value==='import:25544');
     await page.waitForFunction(()=>document.getElementById('orbitAz').textContent!=='—');
@@ -250,7 +255,7 @@ try {
     await context.setOffline(true);
     await page.reload();await page.click('#trackTab');
     await page.waitForFunction(()=>document.querySelectorAll('.pass-row').length>0);
-    assert.equal(await page.inputValue('#satelliteSelect'),'import:25544');
+    assert.equal(await page.getAttribute('#satelliteSelect','value'),'import:25544');
     await page.goto(base+prefix+'encode.html');await page.waitForSelector('#encodeBtn');
     await page.click('#encodeBtn'); await page.waitForFunction(()=>!document.getElementById('downloadBtn').disabled);
     await page.goto(base+prefix+'index.html');await page.waitForSelector('#trackTab');
