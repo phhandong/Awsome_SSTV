@@ -176,7 +176,10 @@ export function computePSNR(a, b) {
 
 // 绑定拖放区
 export function bindDropZone(el, fileInput, onFile) {
-  el.addEventListener('click', () => fileInput.click());
+  el.addEventListener('click', event => {
+    // The nested input's synthetic click bubbles back to the drop zone.
+    if (event.target !== fileInput) fileInput.click();
+  });
 
   el.addEventListener('dragover', e => {
     e.preventDefault();

@@ -103,12 +103,13 @@ function hasWebAudio() {
   return typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined';
 }
 
-let _ctx = null;
-function audioContext() {
-  if (_ctx) return _ctx;
-  const Ctor = typeof AudioContext !== 'undefined' ? AudioContext : webkitAudioContext;
-  _ctx = new Ctor();
-  return _ctx;
+async function withTimeout(promise, milliseconds, message) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), milliseconds);
+    })]);
+  } finally { clearTimeout(timer); }
 }
 
 /**
@@ -116,18 +117,21 @@ function audioContext() {
  * @param {File|ArrayBuffer} fileOrBuf  File 或已读 ArrayBuffer
  * @returns {Promise<{sampleRate:number, samples:Float32Array, format:string}>}
  */
-export async function decodeAudioFile(fileOrBuf, limits = AUDIO_FILE_LIMITS) {
+export async function decodeAudioFile(fileOrBuf, limits = AUDIO_FILE_LIMITS, { onStage = () => {} } = {}) {
   limits = { ...AUDIO_FILE_LIMITS, ...limits };
   assertFileWithinLimits(fileOrBuf, limits);
+  onStage('正在读取音频文件…');
   let metadataChecked = false;
   if (isBrowserBlob(fileOrBuf)) {
-    const header = await fileOrBuf.slice(0, 12).arrayBuffer();
+    const header = await withTimeout(fileOrBuf.slice(0, 12).arrayBuffer(), 30000, '读取文件超时，请先在“文件”App 中下载到本机后重试');
     if (!isWavHeader(header)) {
+      onStage('正在读取音频信息…');
       await assertCompressedMediaMetadataWithinLimits(fileOrBuf, limits);
       metadataChecked = true;
     }
   }
-  const buf = fileOrBuf instanceof ArrayBuffer ? fileOrBuf : await fileOrBuf.arrayBuffer();
+  onStage('正在读取音频数据…');
+  const buf = fileOrBuf instanceof ArrayBuffer ? fileOrBuf : await withTimeout(fileOrBuf.arrayBuffer(), 30000, '读取文件超时，请先在“文件”App 中下载到本机后重试');
   if (!(buf instanceof ArrayBuffer) || buf.byteLength > limits.maxFileBytes) {
     throw new Error('读取后的音频文件超出安全上限');
   }
@@ -137,6 +141,7 @@ export async function decodeAudioFile(fileOrBuf, limits = AUDIO_FILE_LIMITS) {
   const isWav = isWavHeader(buf);
   let wavError = null;
   if (isWav) {
+    onStage('正在解析 WAV 音频…');
     try {
       const r = decodeWAV(buf, {
         minSampleRate: limits.minSampleRate,
@@ -159,24 +164,31 @@ export async function decodeAudioFile(fileOrBuf, limits = AUDIO_FILE_LIMITS) {
 
   // MP3 / 其他 → Web Audio
   if (!metadataChecked && isBrowserBlob(fileOrBuf)) {
+    onStage('正在读取音频信息…');
     await assertCompressedMediaMetadataWithinLimits(fileOrBuf, limits);
   }
   if (!hasWebAudio()) {
     if (wavError) throw new Error(`WAV 解析失败: ${wavError.message}`);
     throw new Error('当前环境不支持 MP3 解码(需要浏览器 Web Audio API)。WAV 仍可用。');
   }
-  const ctx = audioContext();
-  // 某些浏览器需 resume
-  if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (_) {} }
-
-  const audioBuf = await ctx.decodeAudioData(buf.slice(0));  // slice 防止 ArrayBuffer 被分离
-  assertDecodedAudioWithinLimits({
-    sampleRate: audioBuf.sampleRate,
-    sampleCount: audioBuf.length,
-    channelCount: audioBuf.numberOfChannels,
-  }, limits);
-  const samples = toMono(audioBuf);
-  return { sampleRate: audioBuf.sampleRate, samples, format: 'Web Audio' };
+  const Ctor = typeof AudioContext !== 'undefined' ? AudioContext : webkitAudioContext;
+  const ctx = new Ctor();
+  try {
+    // Decoding does not need playback permission. On iOS, resume() can stay
+    // pending after returning from the file picker; never await it here.
+    onStage('正在解码音频数据…');
+    const audioBuf = await withTimeout(ctx.decodeAudioData(buf.slice(0)), 60000, '音频解码超时，请重试或转换为 PCM WAV 后载入');
+    assertDecodedAudioWithinLimits({
+      sampleRate: audioBuf.sampleRate,
+      sampleCount: audioBuf.length,
+      channelCount: audioBuf.numberOfChannels,
+    }, limits);
+    const samples = toMono(audioBuf);
+    return { sampleRate: audioBuf.sampleRate, samples, format: 'Web Audio' };
+  } finally {
+    // A stuck close must not block the result or prevent the next upload.
+    try { void ctx.close?.()?.catch(() => {}); } catch (_) {}
+  }
 }
 
 // AudioBuffer → 单声道 Float32Array(多声道取平均)

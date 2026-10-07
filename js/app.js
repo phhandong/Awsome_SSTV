@@ -2063,7 +2063,11 @@ async function onAudioFile(file) {
   if (spectrum) spectrum.getContext('2d').clearRect(0, 0, spectrum.width, spectrum.height);
   try {
     ui.toast('解码音频文件中…');
-    const { sampleRate, samples, format } = await decodeAudioFile(file);
+    const { sampleRate, samples, format } = await decodeAudioFile(file, undefined, {
+      onStage: message => {
+        if (loadId === state.audioLoadId) document.getElementById('audioMeta').textContent = message;
+      },
+    });
     if (loadId !== state.audioLoadId) return;
     state.uploadedAudio = { sampleRate, samples, format };
 
@@ -2087,6 +2091,9 @@ async function onAudioFile(file) {
   } catch (e) {
     if (loadId !== state.audioLoadId) return;
     console.error(e);
+    state.uploadedAudio = null;
+    state.audioPlayer?.clear();
+    document.getElementById('offlineDecodeBtn').disabled = true;
     document.getElementById('audioMeta').textContent = `AUDIO LOAD FAILED · ${e.message}`;
     document.getElementById('audioMeta').classList.add('is-error');
     ui.toast('音频加载失败: ' + e.message, 'error');
