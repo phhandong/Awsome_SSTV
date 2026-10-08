@@ -181,6 +181,7 @@
         <div class="frequency-heading"><span>接收频率</span><span id="frequencyMode">FM</span></div>
         <div class="frequency-value"><output id="receiveFrequency">—</output><span>MHz</span></div>
         <p id="frequencyStatus" role="status">设置观测位置后计算多普勒</p>
+        <p id="relaySummary" class="relay-summary" hidden></p>
       </section>
       <div class="tracking-grid">
         <section class="sky-console" aria-label="卫星与手机指向">
@@ -226,10 +227,11 @@
             <button type="button" data-catalog-filter="favorites" aria-pressed="false">收藏</button>
             <button type="button" data-catalog-filter="imports" aria-pressed="false">本地导入</button>
           </div>
-          <p id="satelliteCatalogStatus" class="tracking-note">首次进入跟踪页时检查自动目录。</p>
+          <p id="satelliteCatalogStatus" class="tracking-note" role="status" hidden></p>
           <p id="satelliteResultStatus" class="tracking-note" role="status"></p>
         </div>
         <ul id="satelliteResults" class="satellite-results" aria-label="卫星列表"></ul>
+        <button id="satelliteMore" class="btn satellite-more" type="button" hidden>显示更多卫星</button>
       </dialog>
       <dialog id="trackingSettings" class="tracking-dialog tracking-settings-dialog" aria-labelledby="trackingSettingsTitle">
         <header><h2 id="trackingSettingsTitle">跟踪与频率设置</h2><button id="trackingSettingsClose" class="btn" type="button">完成</button></header>
@@ -238,6 +240,7 @@
             <div class="frequency-details"><span id="nominalFrequency">标称 —</span><output id="dopplerShift">频移 —</output></div>
             <p class="tracking-note">卫星距离 <output id="orbitRange">—</output></p>
             <p id="frequencySource" class="tracking-note"></p>
+            <div id="transponderDetails" class="transponder-details tracking-note" hidden></div>
             <p class="tracking-note">频率预设不代表正在发射。射频模式仅作提示，不改变 SSTV 解码设置；显示位数不代表预测精度。</p>
             <form id="bandTuneForm" class="observer-form" hidden><label>频段内目标 MHz<input id="bandTuneMHz" type="text" inputmode="decimal" required></label><button class="btn" type="submit">应用频率</button></form>
             <div class="tracking-actions"><button id="frequencyNew" class="btn" type="button">新增频率</button><button id="frequencyEdit" class="btn" type="button">编辑</button><button id="frequencyDelete" class="btn" type="button">删除</button></div>
@@ -263,7 +266,9 @@
               <div class="tracking-actions"><button id="orbitPasteSubmit" class="btn" type="submit">导入文本</button><button id="orbitPasteCancel" class="btn" type="button">取消</button></div>
             </form>
             <p id="orbitDataStatus" class="tracking-note" role="status">正在读取本机缓存…</p>
-            <p id="catalogDataStatus" class="tracking-note" role="status">首次进入跟踪页时检查业余无线电目录。</p>
+            <p id="catalogDataStatus" class="tracking-note" role="status">首次进入跟踪页时读取卫星目录。</p>
+            <p id="transponderDataStatus" class="tracking-note" role="status">转发器数据将在进入跟踪页时更新。</p>
+            <p class="tracking-note">默认数据源：<a href="https://tledata.xanyi.eu.org/tledata/all.txt" target="_blank" rel="noopener noreferrer">TLEData 星历</a> · <a href="https://tledata.xanyi.eu.org/tledata/trans.json" target="_blank" rel="noopener noreferrer">转发器数据</a></p>
             <p id="orbitEpoch" class="tracking-note"></p>
             <p id="storageStatus" class="tracking-note" hidden=""></p>
           </section>

@@ -4,6 +4,7 @@ const $ = id => document.getElementById(id);
 export function initFrequencyPanel({ store, catalog, position, unavailable, epoch }) {
   const book = new RadioProfiles(store);
   let editing = null, target = null;
+  const range = (low, high = low) => `${formatMHz(low)}${high === low ? '' : `～${formatMHz(high)}`} MHz`;
   function current() { return book.current(catalog()); }
   function render() {
     const choice = current(), point = position();
@@ -16,11 +17,15 @@ export function initFrequencyPanel({ store, catalog, position, unavailable, epoc
     $('frequencyStatus').textContent = !choice ? '此卫星尚未设置下行频率' : !result ? unavailable()
       : `${point.elevation < 0 ? '地平线下 · ' : ''}${point.rangeRateKmS < -.001 ? '接近' : point.rangeRateKmS > .001 ? '远离' : '距离变化接近零'}${old ? ' · 星历较旧，请更新' : ''}`;
     $('frequencyStatus').classList.toggle('is-warning', old || !result);
+    const profile = choice?.profile;
+    const links = $('relaySummary');
+    links.hidden = profile?.uplinkLowHz == null;
+    links.textContent = links.hidden ? '' : `上行 ${range(profile.uplinkLowHz, profile.uplinkHighHz)} · 下行 ${range(profile.lowHz, profile.highHz)}${profile.isRepeater ? ` · 亚音 ${profile.tone || '未提供'}` : ''}`;
   }
   function choices() {
     if (target !== catalog()) { target = catalog(); editing = null; $('frequencyForm').hidden = true; $('frequencyError').textContent = ''; }
     const select = $('frequencySelect'); select.replaceChildren();
-    for (const profile of book.list(catalog())) select.add(new Option(profile.name, profile.id));
+    for (const profile of book.list(catalog())) select.add(new Option(`${profile.name}${profile.inactive ? '（源标为停用）' : ''}`, profile.id));
     const choice = current();
     if (!choice) select.add(new Option('设置下行频率…', ''));
     select.value = choice?.profile.id || '';
@@ -28,12 +33,20 @@ export function initFrequencyPanel({ store, catalog, position, unavailable, epoc
     $('bandTuneForm').hidden = !choice || choice.profile.lowHz === choice.profile.highHz;
     $('bandTuneMHz').value = choice ? formatMHz(choice.tunedHz) : '';
     const source = $('frequencySource'); source.replaceChildren();
+    const details = $('transponderDetails'); details.replaceChildren(); details.hidden = !choice;
     if (choice) {
       const profile = choice.profile;
-      source.append(`${formatMHz(profile.lowHz)}${profile.lowHz === profile.highHz ? '' : `～${formatMHz(profile.highHz)}`} MHz · ${profile.note || '自定义下行频率'}`);
+      for (const text of [
+        `下行 ${range(profile.lowHz, profile.highHz)}${profile.mode ? ` · ${profile.mode}` : ''}`,
+        profile.uplinkLowHz != null ? `上行 ${range(profile.uplinkLowHz, profile.uplinkHighHz)}${profile.uplinkMode ? ` · ${profile.uplinkMode}` : ''}` : '',
+        profile.isRepeater ? `亚音（CTCSS / PL）${profile.tone || '未提供'}` : '',
+        profile.invert ? '反相线性转发' : '',
+        profile.inactive ? '数据源标为停用' : '', profile.unconfirmed ? '数据源标为未确认' : ''
+      ].filter(Boolean)) { const line = document.createElement('span'); line.textContent = text; details.append(line); }
+      source.append(profile.note || (profile.sourceLabel ? '频率记录不代表卫星正在发射。' : '自定义下行频率'));
       if (profile.source) {
         const link = document.createElement('a'); link.href = profile.source; link.target = '_blank'; link.rel = 'noopener noreferrer';
-        link.textContent = ` ARISS · 核对 ${profile.checkedAt}`; source.append(link);
+        link.textContent = ` ${profile.sourceLabel || 'ARISS'}${profile.checkedAt ? ` · 记录更新 ${profile.checkedAt}` : ''}`; source.append(link);
       }
     }
     render();
@@ -77,5 +90,6 @@ export function initFrequencyPanel({ store, catalog, position, unavailable, epoc
       editing = null; $('frequencyForm').hidden = true;
     });
   });
-  return { ready: book.load().then(choices), render, choices };
+  return { ready: book.load().then(choices), render, choices, profiles: catalogId => book.list(catalogId),
+    updateTransponders(profiles) { book.setRemote(profiles); choices(); } };
 }

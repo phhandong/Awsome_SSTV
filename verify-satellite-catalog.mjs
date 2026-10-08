@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parseElements } from './js/orbit-core.js';
-import { TrackingStore, EphemerisSource, CatalogSource, REFRESH_INTERVAL, ISS_URL, AMATEUR_URL } from './js/tracking-store.js';
+import { TrackingStore, EphemerisSource, CatalogSource, REFRESH_INTERVAL, TLE_URL, ORBIT_REQUEST_KEY } from './js/tracking-store.js';
 import { ISS_ID, mergeCatalog, retainedCatalog, catalogChoices, orbitStatus } from './js/tracking-catalog.js';
 
 // Synthetic OMM orbits: fixture names/IDs exercise the directory, not reference orbit accuracy.
@@ -10,31 +10,29 @@ const amateurText = await readFile('test-fixtures/amateur.json', 'utf8');
 const inputs = JSON.parse(amateurText);
 const now = Date.parse('2026-10-06T08:00:00Z');
 const store = new TrackingStore(null, null), requests = [];
-const fetcher = async url => { requests.push(url); return { status: 200, text: async () => url === ISS_URL ? issText : amateurText }; };
+const fetcher = async url => { requests.push(url); return { status: 200, text: async () => amateurText }; };
 const issSource = new EphemerisSource(store, parseElements, fetcher);
 const catalogSource = new CatalogSource(store, parseElements, fetcher);
 const [iss, catalog] = await Promise.all([issSource.refresh(now), catalogSource.refresh(now), catalogSource.refresh(now)]);
-assert.equal(requests.length, 2, 'independent feeds, concurrent directory calls coalesced');
+assert.equal(requests.length, 1, 'ISS and directory share one concurrent download');
 assert.equal(catalog.records.length, 3);
 assert.ok(catalog.records.every(item => item.id !== ISS_ID));
 assert.ok(catalog.records.some(item => item.catalogId === '100123'), 'OMM supports six-digit NORAD IDs');
 await issSource.refresh(now + 1); await catalogSource.refresh(now + 1);
-assert.equal(requests.length, 2);
+assert.equal(requests.length, 1);
 await catalogSource.refresh(now + REFRESH_INTERVAL);
-assert.equal(requests.filter(url => url === AMATEUR_URL).length, 2);
-assert.equal(requests.filter(url => url === ISS_URL).length, 1, 'directory does not refresh ISS');
-assert.equal(await store.get('lastRequest'), now, 'legacy ISS key preserved');
-assert.equal(await store.get('lastRequest:amateur'), now + REFRESH_INTERVAL);
+assert.equal(requests.filter(url => url === TLE_URL).length, 2);
+assert.equal(await store.get(ORBIT_REQUEST_KEY), now + REFRESH_INTERVAL);
 
 // A whole response must validate before replacing the previous good snapshot.
 for (const [body, status, message] of [
-  ['<html>Server Error</html>', 200, /OMM JSON/], ['[]', 200, /最多导入/],
+  ['<html>Server Error</html>', 200, /TLE/], ['[]', 200, /最多导入/],
   ['[{}]', 200, /OMM/], ['[{', 200, /JSON/], [amateurText, 503, /503/],
   [JSON.stringify([...inputs, { ...inputs[1], ECCENTRICITY: 2 }]), 200, /范围/],
-  [issText, 200, /没有可用/]
+  [JSON.stringify(inputs.filter(item => item.NORAD_CAT_ID !== 25544)), 200, /没有 ISS/]
 ]) {
   const cached = await store.get('amateur');
-  const next = (await store.get('lastRequest:amateur')) + REFRESH_INTERVAL;
+  const next = (await store.get(ORBIT_REQUEST_KEY)) + REFRESH_INTERVAL;
   let calls = 0;
   const failed = new CatalogSource(store, parseElements, async () => { calls++; return { status, text: async () => body }; });
   const result = await failed.refresh(next);
@@ -44,7 +42,7 @@ for (const [body, status, message] of [
   assert.equal((await failed.refresh(next + 1)).limited, true);
   assert.equal(calls, 1, 'failed requests are rate limited');
 }
-const next = (await store.get('lastRequest:amateur')) + REFRESH_INTERVAL;
+const next = (await store.get(ORBIT_REQUEST_KEY)) + REFRESH_INTERVAL;
 const timeout = new CatalogSource(store, parseElements, (_url, { signal }) => new Promise((_resolve, reject) => {
   signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
 }), { timeoutMs: 5 });

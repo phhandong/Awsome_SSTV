@@ -1,7 +1,7 @@
 export const ISS_PROFILES = [
   { id: 'iss-sstv-uhf', name: 'SSTV UHF', mode: 'FM', lowHz: 437550000, highHz: 437550000, note: 'SSTV 活动频率，以活动公告为准', source: 'https://www.ariss.org/contact-the-iss.html' },
   { id: 'iss-sstv-vhf', name: 'SSTV VHF', mode: 'FM', lowHz: 145800000, highHz: 145800000, note: '历史常用 SSTV 频率，以活动公告为准', source: 'https://www.ariss.org/?linkId=130232132' },
-  { id: 'iss-repeater', name: 'FM 转发器下行', mode: 'FM', lowHz: 437800000, highHz: 437800000, note: '转发器下行频率，不代表正在工作', source: 'https://www.ariss.org/current-status-of-iss-stations.html' },
+  { id: 'iss-repeater', name: 'FM 转发器下行', mode: 'FM', lowHz: 437800000, highHz: 437800000, uplinkLowHz: 145990000, uplinkHighHz: 145990000, uplinkMode: 'FM', isRepeater: true, tone: '67.0 Hz', note: '转发器下行频率，不代表正在工作', source: 'https://www.ariss.org/current-status-of-iss-stations.html' },
 ].map(profile => Object.freeze({ ...profile, checkedAt: '2026-10-07', builtin: true }));
 
 export function mhzToHz(value) {
@@ -26,8 +26,19 @@ export function receivedFrequency(nominalHz, position, now = Date.now()) {
 
 // Catalog numbers, not orbit-source IDs, own the user's frequency choices.
 export class RadioProfiles {
-  constructor(store) { this.store = store; this.entries = {}; }
+  constructor(store) { this.store = store; this.entries = {}; this.remote = new Map(); }
+  setRemote(profiles = []) {
+    this.remote.clear();
+    for (const profile of profiles) {
+      if (!profile || !/^\d{1,9}$/.test(profile.catalogId) || !profile.id?.startsWith('remote-') || !profile.builtin) continue;
+      const items = this.remote.get(profile.catalogId) || [];
+      items.push(profile); this.remote.set(profile.catalogId, items);
+    }
+    for (const items of this.remote.values()) items.sort((a, b) => Number(a.inactive) - Number(b.inactive));
+  }
   async load() {
+    const remote = await this.store.get('transponders:v1');
+    this.setRemote(Array.isArray(remote) ? remote : []);
     const data = await this.store.get('radioProfiles.v1');
     if (data && typeof data === 'object') for (const [catalog, entry] of Object.entries(data)) {
       if (!/^\d{1,9}$/.test(catalog) || !entry || typeof entry !== 'object') continue;
@@ -42,7 +53,7 @@ export class RadioProfiles {
     if (!/^\d{1,9}$/.test(String(catalog))) throw new Error('请先选择卫星');
     return this.entries[catalog] ||= { profiles: [] };
   }
-  list(catalog) { return [...(String(catalog) === '25544' ? ISS_PROFILES : []), ...this.entry(catalog).profiles]; }
+  list(catalog) { return [...(String(catalog) === '25544' ? ISS_PROFILES : []), ...(this.remote.get(String(catalog)) || []), ...this.entry(catalog).profiles]; }
   current(catalog) {
     const entry = this.entry(catalog), list = this.list(catalog);
     const profile = list.find(p => p.id === entry.selectedId) || list[0];

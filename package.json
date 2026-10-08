@@ -8,7 +8,7 @@
     "icons": "node scripts/build-icons.mjs",
     "prepare:offline": "node scripts/prepare-offline.mjs",
     "verify:offline": "node scripts/prepare-offline.mjs --check",
-    "test:tracking": "node verify-tracking.js && node verify-satellite-catalog.mjs && node verify-orientation-auto.mjs && node verify-doppler.mjs",
+    "test:tracking": "node verify-tracking.js && node verify-satellite-catalog.mjs && node verify-tledata.mjs && node verify-orientation-auto.mjs && node verify-doppler.mjs",
     "test:pwa": "node verify-tracking-browser.js && node verify-satellite-catalog-browser.mjs",
     "test:doppler": "node verify-doppler.mjs",
     "test:field": "node verify-tracking-browser.js --doppler-ui",

@@ -1,0 +1,6 @@
+[
+  {"uuid":"iss-voice","norad_cat_id":25544,"description":"Mode V/U FM - Voice Repeater CTCSS 67.0 Hz","type":"Transceiver","mode":"FM","uplink_mode":"FM","uplink_low":145990000,"uplink_high":null,"downlink_low":437800000,"downlink_high":null,"alive":true,"status":"active","updated":"2025-07-02T07:57:46Z"},
+  {"uuid":"so50-voice","norad_cat_id":27607,"description":"Mode V/U FM Voice CTCSS 67.0 Hz","type":"Transceiver","mode":"FM","uplink_low":145850000,"downlink_low":436795000,"alive":true,"status":"active"},
+  {"uuid":"test-linear","norad_cat_id":100123,"description":"TEST linear band","type":"Transponder","mode":"USB","uplink_mode":"LSB","uplink_low":145900000,"uplink_high":146000000,"downlink_low":435000000,"downlink_high":435100000,"invert":true,"alive":true,"status":"active"},
+  {"uuid":"test-voice","norad_cat_id":100470,"description":"TEST FM repeater (tone not supplied)","type":"Transceiver","mode":"FM","uplink_low":145950000,"downlink_low":435500000,"alive":true,"status":"active"}
+]

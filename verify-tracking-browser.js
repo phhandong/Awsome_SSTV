@@ -6,6 +6,7 @@ import { chromium } from 'playwright-core';
 
 await mkdir('test-artifacts', {recursive:true});
 const root=process.cwd(), fixture=await readFile('test-fixtures/iss.json','utf8'), catalogFixture=await readFile('test-fixtures/amateur.json','utf8');
+const transponderFixture=await readFile('test-fixtures/transponders.json','utf8');
 const mime={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.webmanifest':'application/manifest+json','.png':'image/png','.svg':'image/svg+xml','.woff2':'font/woff2'};
 let release=1;
 const server=createServer(async(req,res)=>{
@@ -39,10 +40,10 @@ try {
     release=1;
     const context=await browser.newContext({viewport:{width:390,height:844},permissions:['microphone']});
     let fetches=0, catalogFetches=0;
-    await context.route('https://celestrak.org/**',route=>{
-      const catalog=new URL(route.request().url()).searchParams.get('GROUP')==='amateur';
-      if(catalog) catalogFetches++; else fetches++;
-      return route.fulfill({status:200,contentType:'application/json',body:catalog?catalogFixture:fixture});
+    await context.route('https://tledata.xanyi.eu.org/**',route=>{
+      const trans=new URL(route.request().url()).pathname.endsWith('/trans.json');
+      if(trans) catalogFetches++; else fetches++;
+      return route.fulfill({status:200,contentType:'application/json',body:trans?transponderFixture:catalogFixture});
     });
     await context.addInitScript(()=>{
       // Headless Chrome can emit an all-null hardware event. This suite drives
@@ -202,7 +203,7 @@ try {
     assert.notEqual(await page.textContent('#orbitAz'),'—');
     await page.click('#refreshOrbit');
     assert.equal(fetches,1,'manual refresh must respect two hours');
-    assert.equal(catalogFetches,1,'directory has its own two-hour request limit');
+    assert.equal(catalogFetches,1,'transponder data has its own two-hour request limit');
     await page.click('#trackingSettingsClose');
     await page.evaluate(()=>{window.testOrientationAllowed=false;});
     await page.click('#orientationEnable');

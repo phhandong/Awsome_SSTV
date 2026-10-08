@@ -52,8 +52,8 @@ export function normalizeCatalogId(value) {
   return catalog;
 }
 
-export function parseElements(text, source = 'import', fetchedAt = Date.now()) {
-  if (typeof text !== 'string' || !text.trim() || text.length > 1024 * 1024) throw new Error('请选择小于 1 MB 的 TLE 或 OMM JSON 文件');
+export function parseElements(text, source = 'import', fetchedAt = Date.now(), { maxBytes = 1024 * 1024, maxRecords = 500 } = {}) {
+  if (typeof text !== 'string' || !text.trim() || text.length > maxBytes || new Blob([text]).size > maxBytes) throw new Error(`请选择小于 ${maxBytes / 1024 / 1024} MB 的 TLE 或 OMM JSON 文件`);
   const records = [];
   const add = (record) => {
     const sat = recordToSatrec(record);
@@ -65,7 +65,7 @@ export function parseElements(text, source = 'import', fetchedAt = Date.now()) {
     let values;
     try { values = JSON.parse(text); } catch (_) { throw new Error('OMM JSON 格式错误'); }
     if (!Array.isArray(values)) values = [values];
-    if (!values.length || values.length > 500) throw new Error('一次最多导入 500 颗卫星');
+    if (!values.length || values.length > maxRecords) throw new Error(`一次最多导入 ${maxRecords} 颗卫星`);
     for (const input of values) {
       if (!input || typeof input !== 'object') throw new Error('OMM 记录无效');
       const epoch = String(input.EPOCH || '');
@@ -94,7 +94,7 @@ export function parseElements(text, source = 'import', fetchedAt = Date.now()) {
       if (!one?.startsWith('1 ') || !two?.startsWith('2 ') || one.length !== 69 || two.length !== 69 ||
           one.slice(2, 7) !== two.slice(2, 7) || !checksum(one) || !checksum(two)) throw new Error('TLE 行格式、编号或校验和错误');
       add({ format: 'tle', elements: [one, two], name });
-      if (records.length > 500) throw new Error('一次最多导入 500 颗卫星');
+      if (records.length > maxRecords) throw new Error(`一次最多导入 ${maxRecords} 颗卫星`);
     }
   }
   if (!records.length) throw new Error('没有可用轨道记录');

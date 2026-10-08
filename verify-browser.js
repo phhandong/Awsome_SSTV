@@ -60,7 +60,7 @@ async function clickVisibleScrim(page) {
 
 async function verifyViewport(name, viewport) {
   const context = await browser.newContext({ viewport, permissions: ['microphone'] });
-  await context.route('https://celestrak.org/**', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"OBJECT_NAME":"ISS","NORAD_CAT_ID":25544,"EPOCH":"2026-10-06T00:20:47Z","MEAN_MOTION":15.48747543,"ECCENTRICITY":0.00068585,"INCLINATION":51.6314,"RA_OF_ASC_NODE":111.6262,"ARG_OF_PERICENTER":227.8987,"MEAN_ANOMALY":132.1419,"BSTAR":0.00010208237,"MEAN_MOTION_DOT":0.00005131,"MEAN_MOTION_DDOT":0}]' }));
+  await context.route('https://tledata.xanyi.eu.org/**', route => route.fulfill({ status: 200, contentType: 'application/json', body: '[{"OBJECT_NAME":"ISS","NORAD_CAT_ID":25544,"EPOCH":"2026-10-06T00:20:47Z","MEAN_MOTION":15.48747543,"ECCENTRICITY":0.00068585,"INCLINATION":51.6314,"RA_OF_ASC_NODE":111.6262,"ARG_OF_PERICENTER":227.8987,"MEAN_ANOMALY":132.1419,"BSTAR":0.00010208237,"MEAN_MOTION_DOT":0.00005131,"MEAN_MOTION_DDOT":0}]' }));
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));

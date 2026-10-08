@@ -1,5 +1,6 @@
 import { parseElements, normalizeCatalogId, validateObserver, DAY } from './orbit-core.js';
-import { TrackingStore, EphemerisSource, CatalogSource, REFRESH_INTERVAL } from './tracking-store.js';
+import { TrackingStore, EphemerisSource, CatalogSource, REFRESH_INTERVAL, ORBIT_REQUEST_KEY } from './tracking-store.js';
+import { TransponderSource } from './transponders.js';
 import { ISS_ID, mergeCatalog, retainedCatalog } from './tracking-catalog.js';
 import { initSatellitePicker } from './satellite-picker.js';
 import { PhoneOrientation, pointingGuide } from './orientation.js';
@@ -16,6 +17,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   const store = new TrackingStore(globalThis.indexedDB, fallback);
   const source = new EphemerisSource(store, parseElements);
   const catalogSource = new CatalogSource(store, parseElements);
+  const transponderSource = new TransponderSource(store);
   // One live canvas and one set of image/recording controls shared by both views.
   const decodedOutput = $('decoderOutput');
   const decodedOutputHome = decodedOutput.parentElement;
@@ -37,6 +39,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   const settings = $('trackingSettings'), imageDialog = $('trackingImageDialog');
   const picker = initSatellitePicker({
     state: () => ({ records, selected, favorites, loading: catalogLoading, status: $('catalogDataStatus').textContent }),
+    profiles: catalogId => frequency.profiles(normalizeCatalogId(catalogId)),
     select(id) {
       selected = id;
       pruneMissing();
@@ -144,7 +147,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   }
   async function refreshFeed(feed, catalog, manual) {
     const status = $(catalog ? 'catalogDataStatus' : 'orbitDataStatus');
-    const label = catalog ? '业余无线电目录' : 'ISS 星历';
+    const label = catalog ? '卫星目录' : 'ISS 星历';
     if (catalog) catalogLoading = true;
     status.textContent = `正在检查${label}…`; picker.render();
     try {
@@ -158,21 +161,31 @@ export function initTracking({ receiver, onActivity = () => {} }) {
       }
       renderChoices();
       if (previous?.epoch !== record()?.epoch || previous?.id !== record()?.id) configure();
-      const next = (await store.get(catalog ? 'lastRequest:amateur' : 'lastRequest')) + REFRESH_INTERVAL;
+      const next = (await store.get(ORBIT_REQUEST_KEY)) + REFRESH_INTERVAL;
       const cached = catalog ? result.records?.length : !!result.record;
       status.textContent = result.error
         ? `${label}：${result.error}；${cached ? '继续使用缓存。' : '暂无缓存，可在设置中导入星历。'}下次可检查 ${localTime(next)}。`
-        : result.limited ? `${label}：${manual ? '尚未到更新间隔。' : ''}下次可检查 ${localTime(next)}。`
+        : result.limited ? `${label}：${cached ? `已读取缓存${catalog ? ` · ${result.records.length} 颗卫星` : ''}。` : ''}${manual ? '尚未到更新间隔。' : ''}下次可检查 ${localTime(next)}。`
         : `${label}已更新${catalog ? ` · ${result.records.length} 颗卫星` : ''}；每两小时最多请求一次。`;
       status.classList.toggle('is-warning', !!result.error);
     } catch (error) { status.textContent = `${label}读取失败：${error.message}`; status.classList.add('is-warning'); }
     finally { if (catalog) catalogLoading = false; renderData(); picker.render(); }
   }
+  async function refreshTransponders() {
+    const status = $('transponderDataStatus');
+    status.textContent = '正在检查转发器数据…';
+    const result = await transponderSource.refresh();
+    if (Array.isArray(result.value)) { frequency.updateTransponders(result.value); picker.render(); }
+    const next = (await store.get('lastRequest:transponders')) + REFRESH_INTERVAL;
+    status.textContent = result.error ? `转发器数据：${result.error}；${result.value ? '继续使用缓存。' : '暂无缓存。'}下次可检查 ${localTime(next)}。`
+      : `转发器${result.limited ? '已缓存' : '已更新'} · ${result.value?.length || 0} 条频率记录；下次可检查 ${localTime(next)}。`;
+    status.classList.toggle('is-warning', !!result.error);
+  }
   async function performRefresh(manual) {
     $('refreshOrbit').disabled = true;
     try {
       const tasks = [refreshFeed(source, false, manual)];
-      if (catalogStarted || active || manual) { catalogStarted = true; tasks.push(refreshFeed(catalogSource, true, manual)); }
+      if (catalogStarted || active || manual) { catalogStarted = true; tasks.push(refreshFeed(catalogSource, true, manual), refreshTransponders()); }
       await Promise.all(tasks);
     } finally { $('refreshOrbit').disabled = false; }
   }
