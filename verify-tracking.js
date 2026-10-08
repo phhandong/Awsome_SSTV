@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { parseElements, recordToSatrec, lookAt, predictPasses, validateObserver, DAY } from './js/orbit-core.js';
+import { parseElements, normalizeCatalogId, recordToSatrec, lookAt, predictPasses, validateObserver, DAY } from './js/orbit-core.js';
 import { propagate } from './js/vendor/satellite.es.js';
 import { declinationAt, topVector, vectorAngles, smoothVector, pointingGuide, PhoneOrientation } from './js/orientation.js';
 import { TrackingStore, EphemerisSource, REFRESH_INTERVAL } from './js/tracking-store.js';
@@ -48,6 +48,17 @@ assert.throws(()=>parseElements(tle.slice(0,-1)+'8'));
 assert.throws(()=>parseElements('[{}]'));
 assert.throws(()=>parseElements(text.replace('15.48747543','null')));
 assert.equal(parseElements('VANGUARD\n'+tle)[0].name,'VANGUARD');
+for (const [encoded, numeric] of [['A0470','100470'],['H9999','179999'],['J0000','180000'],['N9999','229999'],['P0000','230000'],['Z9999','339999']]) {
+  assert.equal(normalizeCatalogId(encoded), numeric);
+}
+for (const invalid of ['I0470','O0470','a0470','A470','A04X0']) assert.throws(() => normalizeCatalogId(invalid));
+const jamx = parseElements(`JAMX01
+1 A0470U 26195F   26280.19609334  .00004321  00000-0  26865-3 0  9997
+2 A0470  97.5407 353.3186 0013970 123.6964 236.5599 15.10085176  6509`)[0];
+assert.equal(jamx.catalogId, '100470');
+assert.equal(jamx.id, 'import:100470');
+assert.equal(recordToSatrec(jamx).satnum, 'A0470', 'original fixed-width TLE is preserved');
+assert.ok(Number.isFinite(lookAt(recordToSatrec(jamx),observer,Date.parse('2026-10-08T00:00:00Z')).azimuth));
 
 // NOAA WMM2025 published tests, declination degrees, 0/100 km above WGS84.
 // https://www.ncei.noaa.gov/sites/default/files/2025-02/WMM2025_TEST_VALUES.txt

@@ -41,12 +41,23 @@ function checksum(line) {
   return sum % 10 === Number(line[68]);
 }
 
+export function normalizeCatalogId(value) {
+  const catalog = String(value).trim();
+  // Alpha-5 keeps the fixed-width TLE intact; I and O are excluded.
+  if (/^[A-HJ-NP-Z]\d{4}$/.test(catalog)) {
+    const prefix = 'ABCDEFGHJKLMNPQRSTUVWXYZ'.indexOf(catalog[0]) + 10;
+    return String(prefix * 10000 + Number(catalog.slice(1)));
+  }
+  if (!/^\d{1,9}$/.test(catalog)) throw new Error('星历缺少有效卫星编号');
+  return catalog;
+}
+
 export function parseElements(text, source = 'import', fetchedAt = Date.now()) {
   if (typeof text !== 'string' || !text.trim() || text.length > 1024 * 1024) throw new Error('请选择小于 1 MB 的 TLE 或 OMM JSON 文件');
   const records = [];
   const add = (record) => {
     const sat = recordToSatrec(record);
-    const catalogId = String(sat.satnum);
+    const catalogId = normalizeCatalogId(sat.satnum);
     records.push({ ...record, catalogId, epoch: (sat.jdsatepoch - 2440587.5) * DAY,
       id: `${source}:${catalogId}`, source, fetchedAt, name: String(record.name || catalogId).slice(0, 120) });
   };

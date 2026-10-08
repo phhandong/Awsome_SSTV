@@ -45,6 +45,9 @@ try {
       return route.fulfill({status:200,contentType:'application/json',body:catalog?catalogFixture:fixture});
     });
     await context.addInitScript(()=>{
+      // Headless Chrome can emit an all-null hardware event. This suite drives
+      // sensor data explicitly, so native events must not race the fixtures.
+      window.addEventListener('deviceorientation',event=>{if(event.isTrusted)event.stopImmediatePropagation();},true);
       window.testOrientationAllowed=true;
       window.DeviceOrientationEvent.requestPermission=async()=>window.testOrientationAllowed?'granted':'denied';
     });
@@ -207,11 +210,40 @@ try {
     await page.evaluate(()=>{window.testOrientationAllowed=true;});
     await page.click('#orientationEnable');
     await page.waitForFunction(()=>!document.getElementById('orientationCalibrate').disabled);
+    assert.equal(await page.isVisible('#orientationGuide'),true,'calibration guidance stays on the main tracking surface');
+    assert.match(await page.textContent('#orientationGuide'),/平放.*2 秒/);
+    assert.equal(await page.isVisible('#pointingHint'),false,'guidance shares the pointing row');
+    for(const [width,height] of [[390,844],[375,550]]) {
+      await page.setViewportSize({width,height});
+      const fit=await page.evaluate(()=>['orientationGuide','skyPlot','trackingImageMount','trackingReceiveBtn'].every(id=>{
+        const r=document.getElementById(id).getBoundingClientRect();
+        return r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth&&r.height>0;
+      }));
+      assert.equal(fit,true,'calibration prompt fits alongside both live surfaces');
+      await page.screenshot({path:`test-artifacts/orientation-guide-${width}x${height}.png`});
+    }
+    await page.setViewportSize({width:390,height:844});
     await page.evaluate(()=>{ const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:0,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e); });
     await page.click('#trackingSettingsOpen');
     await page.click('#orientationCalibrate');
     await page.click('#trackingSettingsClose');
     await page.waitForFunction(()=>document.getElementById('poseAz').textContent!=='—');
+    assert.match(await page.textContent('#orientationGuide'),/方向已就绪/);
+    await page.click('#receiveTab'); await page.click('#trackTab');
+    await page.clock.runFor(100);
+    await page.evaluate(()=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:45,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e);});
+    assert.notEqual(await page.textContent('#poseEl'),'—','view switch retains calibration while tilted');
+    await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
+    assert.equal(await page.textContent('#poseEl'),'—','background does not display an old pose');
+    await page.clock.runFor(30000);
+    await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
+    assert.match(await page.textContent('#orientationGuide'),/无需重新平放/);
+    await page.clock.runFor(100);
+    await page.evaluate(()=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:45,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e);});
+    assert.equal(await page.textContent('#poseEl'),'45.0°','fresh tilted reading reuses recent calibration');
+    await page.clock.runFor(2100);
+    await page.evaluate(()=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:45,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e);});
+    assert.equal(await page.isVisible('#orientationGuide'),false,'ready notice yields to pointing guidance');
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:`test-artifacts/tracking-${prefix==='/'?'root':'subpath'}-mobile.png`,fullPage:true});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'mobile overflow');

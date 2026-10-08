@@ -53,6 +53,11 @@
 .pointing-command { display:flex; align-items:center; justify-content:space-between; flex:none; gap:8px; min-height:34px; padding:6px 10px; border-radius:8px; background:var(--accent-soft); color:var(--text-dim); }
 .pointing-command>span { font-size:11px; line-height:1.4; }
 .pointing-command output { flex:none; font:16px var(--font-mono); color:var(--accent); }
+.pointing-command[data-state="calibrating"],.pointing-command[data-state="warning"] { color:var(--accent-2); background:var(--accent-2-soft); box-shadow:inset 2px 0 var(--accent-2-line); }
+.pointing-command[data-state="calibrating"]::before { content:''; flex:none; width:17px; height:9px; border:1.5px solid currentColor; border-radius:3px; transform:rotate(-8deg); }
+.pointing-command[data-state="ready"] { color:var(--accent); }
+.pointing-command[data-state="ready"]::before { content:'✓'; font-size:14px; }
+#orientationGuide { flex:1; }
 .sky-console:not(.has-observer) .pointing-command { display:none; }
 .tracking-note { color:var(--text-dim); font-size:11px; line-height:1.8; margin:9px 0 0; overflow-wrap:anywhere; }
 .tracking-note.is-warning { color:var(--accent-2); }
@@ -105,6 +110,10 @@
 .import-orbit { position:relative; overflow:hidden; cursor:pointer; }
 .import-orbit input { position:absolute; inset:0; width:100%; opacity:0; cursor:pointer; }
 .import-orbit:focus-within { outline:2px solid var(--accent); outline-offset:3px; }
+.orbit-paste-form { margin-top:14px; min-width:0; }
+.orbit-paste-form>label { font-size:12px; color:var(--text-dim); }
+.orbit-paste-form textarea { display:block; box-sizing:border-box; width:100%; min-width:0; min-height:140px; max-height:50dvh; margin-top:10px; padding:10px; resize:vertical; overflow:auto; border:1px solid var(--line); border-radius:10px; color:var(--text); background:var(--surface-inset); font:16px/1.5 var(--font-mono); }
+.orbit-paste-form textarea:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 .pose-readouts { display:flex; justify-content:space-between; gap:8px; margin:14px 0; font-size:11px; color:var(--text-dim); }
 .pose-readouts output { color:var(--text); font-family:var(--font-mono); }
 .pass-countdown { font:600 22px var(--font-display); color:var(--accent); margin-bottom:12px; }

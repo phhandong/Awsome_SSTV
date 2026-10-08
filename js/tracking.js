@@ -1,4 +1,4 @@
-import { parseElements, validateObserver, DAY } from './orbit-core.js';
+import { parseElements, normalizeCatalogId, validateObserver, DAY } from './orbit-core.js';
 import { TrackingStore, EphemerisSource, CatalogSource, REFRESH_INTERVAL } from './tracking-store.js';
 import { ISS_ID, mergeCatalog, retainedCatalog } from './tracking-catalog.js';
 import { initSatellitePicker } from './satellite-picker.js';
@@ -22,15 +22,16 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   let records = [], selected = 'celestrak:25544', observer = null, position = null, prediction = null;
   let favorites = new Set(), catalogStarted = false, catalogLoading = false, refreshPending = null;
   let pose = null, active = false, generation = 0, worker = null, workerFailed = false, ready = false;
-  let poseMessage = '', lastPredict = 0, locationGeneration = 0, drawFrame = null, lastDraw = 0;
+  let poseMessage = '', poseReadyUntil = 0, lastPredict = 0, locationGeneration = 0, drawFrame = null, lastDraw = 0;
   const orientation = new PhoneOrientation(value => {
+    if (value.valid && !pose?.valid) poseReadyUntil = Date.now() + 2000;
     pose = value;
     if (!value.valid) poseMessage = value.message;
     renderPose(); scheduleDraw();
   });
   const record = () => records.find(item => item.id === selected);
   let orbitError = '';
-  const frequency = initFrequencyPanel({ store, catalog: () => String(record()?.catalogId || '25544'),
+  const frequency = initFrequencyPanel({ store, catalog: () => normalizeCatalogId(record()?.catalogId || '25544'),
     position: () => position, epoch: () => record()?.epoch,
     unavailable: () => !observer ? '请在设置中填写或获取观测位置' : !record() ? '等待有效星历' : orbitError || '等待实时轨道计算…' });
   const settings = $('trackingSettings'), imageDialog = $('trackingImageDialog');
@@ -130,7 +131,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     const future = item && item.epoch > Date.now() + DAY;
     $('orbitEpoch').textContent = item
       ? `${item.missingFromCatalog ? '⚠ 未在最新目录中 · ' : ''}${old ? '⚠ 数据较旧 · ' : future ? '⚠ 历元在未来，请检查时间 · ' : ''}历元 ${localTime(item.epoch)}；${item.source === 'import' ? '导入' : '获取'} ${localTime(item.fetchedAt)}。${item.source === 'import' ? '此目标需手动更新。' : ''}`
-      : '暂无可用星历；联网更新 ISS 或导入本地文件。';
+      : '暂无可用星历；联网更新 ISS、导入文件或粘贴星历。';
     $('orbitEpoch').classList.toggle('is-warning', !!old || !!future || !!item?.missingFromCatalog);
     $('storageStatus').hidden = store.persistent;
     $('storageStatus').textContent = '浏览器持久存储不可用，离线数据可能无法保留；当前会话仍可使用。';
@@ -215,19 +216,45 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     showView(next); $(next ? 'trackTab' : 'receiveTab').focus();
   });
   $('refreshOrbit').addEventListener('click', () => void refresh(true));
+  async function importOrbitText(text) {
+    if (new Blob([text]).size > 1024 * 1024) throw new Error('星历文本不能大于 1 MB');
+    const imported = parseElements(text);
+    const merged = new Map(records.filter(item => item.source === 'import').map(item => [item.id, item]));
+    for (const item of imported) merged.set(item.id, item);
+    if (merged.size > 500) throw new Error('本机最多保存 500 颗导入卫星');
+    records = records.filter(item => item.source !== 'import').concat([...merged.values()]);
+    selected = imported[0].id;
+    pruneMissing();
+    await store.set('imports', [...merged.values()]); await store.set('selected', selected); await saveRetained();
+    renderChoices(); configure();
+    $('orbitDataStatus').textContent = `已导入 ${imported.length} 颗卫星；本地导入数据需手动更新。`;
+    $('orbitDataStatus').classList.remove('is-warning');
+  }
+  function showOrbitPaste(open) {
+    $('orbitPasteForm').hidden = !open;
+    $('orbitPasteOpen').setAttribute('aria-expanded', String(open));
+    if (open) $('orbitPasteStatus').textContent = '';
+    $(open ? 'orbitPasteText' : 'orbitPasteOpen').focus();
+  }
+  $('orbitPasteOpen').addEventListener('click', () => showOrbitPaste($('orbitPasteForm').hidden));
+  $('orbitPasteCancel').addEventListener('click', () => showOrbitPaste(false));
+  $('orbitPasteForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    $('orbitPasteSubmit').disabled = true;
+    $('orbitPasteStatus').textContent = '';
+    try {
+      await importOrbitText($('orbitPasteText').value);
+      $('orbitPasteText').value = '';
+      showOrbitPaste(false);
+    } catch (error) {
+      $('orbitPasteStatus').textContent = `导入失败：${error.message}`;
+    } finally { $('orbitPasteSubmit').disabled = false; }
+  });
   $('orbitFile').addEventListener('change', async event => {
     const file = event.target.files?.[0]; if (!file) return;
     try {
       if (file.size > 1024 * 1024) throw new Error('星历文件不能大于 1 MB');
-      const imported = parseElements(await file.text());
-      const merged = new Map(records.filter(item => item.source === 'import').map(item => [item.id, item]));
-      for (const item of imported) merged.set(item.id, item);
-      if (merged.size > 500) throw new Error('本机最多保存 500 颗导入卫星');
-      records = records.filter(item => item.source !== 'import').concat([...merged.values()]);
-      selected = imported[0].id;
-      pruneMissing();
-      await store.set('imports', [...merged.values()]); await store.set('selected', selected); await saveRetained();
-      renderChoices(); configure(); $('orbitDataStatus').textContent = `已导入 ${imported.length} 颗卫星；本地导入数据需手动更新。`;
+      await importOrbitText(await file.text());
     } catch (error) { $('orbitDataStatus').textContent = `导入失败：${error.message}`; }
     finally { event.target.value = ''; }
   });
@@ -253,7 +280,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     const promise = orientation.enable(); // Keep permission request within the user gesture.
     $('orientationEnable').disabled = true;
     promise.then(() => { $('orientationCalibrate').disabled = false; $('orientationStop').hidden = false; })
-      .catch(error => { $('orientationStatus').textContent = error.message; $('orientationStatus').classList.add('is-warning'); $('orientationEnable').disabled = false; });
+      .catch(error => { $('orientationStatus').textContent = error.message; $('orientationStatus').classList.add('is-warning'); $('orientationEnable').disabled = false; renderPose(); });
   });
   $('orientationCalibrate').addEventListener('click', () => {
     try { orientation.calibrate(); poseMessage = '已校准 · 用手机物理顶部指向目标'; renderPose(); }
@@ -263,6 +290,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     orientation.stop(); $('orientationEnable').disabled = false; $('orientationCalibrate').disabled = true; $('orientationStop').hidden = true;
     $('orientationStatus').textContent = '姿态已关闭';
     $('orientationStatus').classList.remove('is-warning');
+    renderPose();
   });
   $('trackingReceiveBtn').addEventListener('click', () => { $('micReceiveBtn').click(); syncReceiver(); });
   $('trackingDownloadRecording').addEventListener('click', () => $('downloadRecordingBtn').click());
@@ -303,6 +331,19 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('poseEl').textContent = fresh ? degrees(pose.elevation) : '—';
     $('poseRoll').textContent = fresh ? degrees(pose.roll) : '—';
     const guide = pointingGuide(fresh ? pose : null, position);
+    const pending = orientation.enabled && !fresh;
+    const ready = fresh && pose.accuracy <= 20 && Date.now() < poseReadyUntil;
+    const notice = pending ? (pose?.valid ? '等待新的方向数据…' : poseMessage)
+      : fresh && pose.accuracy > 20 ? '指南针精度较低 · 请远离磁性配件后平放'
+      : ready ? '方向已就绪 · 可抬起手机指向' : '';
+    const noticeElement = $('orientationGuide');
+    if (noticeElement.textContent !== notice) noticeElement.textContent = notice;
+    noticeElement.hidden = !notice;
+    $('pointingHint').hidden = !!notice;
+    $('pointingAngle').hidden = !!notice || guide.angle == null;
+    noticeElement.parentElement.dataset.state = !notice ? 'pointing' : ready ? 'ready'
+      : /无需重新平放/.test(notice) ? 'waiting'
+      : /平放|校准/.test(notice) && !/精度|不可靠|不足|失效/.test(notice) ? 'calibrating' : pending ? 'waiting' : 'warning';
     $('pointingHint').textContent = !orientation.enabled && $('orientationStatus').classList.contains('is-warning')
       ? '方向未就绪 · 可按方位角手动指向' : guide.text;
     $('pointingAngle').textContent = guide.angle == null ? '—' : `${guide.angle.toFixed(1)}°`;

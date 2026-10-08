@@ -8,6 +8,9 @@ import { REFRESH_INTERVAL } from './js/tracking-store.js';
 const root = process.cwd();
 const iss = await readFile('test-fixtures/iss.json', 'utf8');
 const amateur = JSON.parse(await readFile('test-fixtures/amateur.json', 'utf8'));
+const jamxTle = `JAMX01(2026-195F 100470)
+1 A0470U 26195F   26280.19609334  .00004321  00000-0  26865-3 0  9997
+2 A0470  97.5407 353.3186 0013970 123.6964 236.5599 15.10085176  6509`;
 const mime = { '.html': 'text/html', '.js': 'text/javascript', '.json': 'application/json', '.css': 'text/css', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' };
 await mkdir('test-artifacts', { recursive: true });
 const server = createServer(async (req, res) => {
@@ -183,6 +186,63 @@ try {
     assert.equal(await page.locator('.satellite-row').count(), 2);
     assert.equal(await page.getAttribute('#satelliteSelect', 'value'), 'celestrak:7530');
     assert.deepEqual(errors, []); await context.close();
+
+    // Paste imports validate before switching, preserve drafts and work offline.
+    const paste = await contextWithFeeds(), pastePage = await paste.context.newPage();
+    const pasteErrors = []; pastePage.on('pageerror', error => pasteErrors.push(error.message));
+    await clock(pastePage); await pastePage.goto(base + prefix); await pastePage.click('#trackTab');
+    await pastePage.waitForFunction(() => document.getElementById('catalogDataStatus').textContent.includes('已更新'));
+    await pastePage.click('#trackingReceiveBtn');
+    await pastePage.waitForFunction(() => document.getElementById('micReceiveBtn').getAttribute('aria-pressed') === 'true');
+    await pastePage.click('#trackingSettingsOpen'); await pastePage.click('#orbitPasteOpen');
+    assert.equal(await pastePage.evaluate(() => document.activeElement.id), 'orbitPasteText');
+    await pastePage.click('#orbitPasteSubmit');
+    assert.match(await pastePage.textContent('#orbitPasteStatus'), /导入失败/);
+    const invalid = jamxTle.slice(0, -1) + '8';
+    await pastePage.fill('#orbitPasteText', invalid); await pastePage.click('#orbitPasteSubmit');
+    assert.match(await pastePage.textContent('#orbitPasteStatus'), /校验和/);
+    assert.equal(await pastePage.inputValue('#orbitPasteText'), invalid);
+    assert.equal(await pastePage.getAttribute('#satelliteSelect', 'value'), 'celestrak:25544');
+    await pastePage.fill('#orbitPasteText', jamxTle); await pastePage.click('#orbitPasteCancel');
+    assert.equal(await pastePage.getAttribute('#orbitPasteOpen', 'aria-expanded'), 'false');
+    assert.equal(await pastePage.evaluate(() => document.activeElement.id), 'orbitPasteOpen');
+    await pastePage.click('#orbitPasteOpen');
+    assert.equal(await pastePage.inputValue('#orbitPasteText'), jamxTle, 'cancel preserves draft');
+    for (const width of [320, 390]) {
+      await pastePage.setViewportSize({ width, height: 568 });
+      await pastePage.locator('#orbitPasteText').scrollIntoViewIfNeeded();
+      assert.equal(await pastePage.evaluate(() => {
+        const form = document.getElementById('orbitPasteForm'), text = document.getElementById('orbitPasteText');
+        const box = text.getBoundingClientRect();
+        return form.scrollWidth <= form.clientWidth && box.left >= 0 && box.right <= innerWidth;
+      }), true, 'long TLE lines scroll inside textarea on narrow screens');
+    }
+    await pastePage.screenshot({ path: `test-artifacts/orbit-paste-${prefix === '/' ? 'root' : 'subpath'}.png` });
+    await pastePage.click('#orbitPasteSubmit');
+    await pastePage.waitForFunction(() => document.getElementById('satelliteSelect').value === 'import:100470');
+    await pastePage.waitForSelector('#orbitPasteForm', { state: 'hidden' });
+    assert.equal(await pastePage.isVisible('#orbitPasteForm'), false);
+    assert.equal(await pastePage.inputValue('#orbitPasteText'), '');
+    assert.match(await pastePage.textContent('#orbitDataStatus'), /已导入 1 颗/);
+    assert.equal(await pastePage.getAttribute('#micReceiveBtn', 'aria-pressed'), 'true');
+    await pastePage.click('#orbitPasteOpen'); await pastePage.fill('#orbitPasteText', iss); await pastePage.click('#orbitPasteSubmit');
+    await pastePage.waitForFunction(() => document.getElementById('satelliteSelect').value === 'import:25544');
+    await pastePage.waitForSelector('#orbitPasteForm', { state: 'hidden' });
+    await pastePage.setInputFiles('#orbitFile', { name: 'jamx.tle', mimeType: 'text/plain', buffer: Buffer.from(jamxTle) });
+    await pastePage.waitForFunction(() => document.getElementById('satelliteSelect').value === 'import:100470');
+    const savedImports = await pastePage.evaluate(async () => {
+      const { TrackingStore } = await import('./js/tracking-store.js'); return new TrackingStore(indexedDB).get('imports');
+    });
+    assert.equal(savedImports.length, 2, 'file and pasted imports update the same local records');
+    await pastePage.click('#trackingSettingsClose');
+    await pastePage.waitForFunction(() => navigator.serviceWorker.ready.then(registration => !!registration.active));
+    await paste.context.setOffline(true); await pastePage.reload(); await pastePage.click('#trackTab');
+    await pastePage.waitForFunction(() => document.getElementById('satelliteSelect').value === 'import:100470');
+    await pastePage.click('#trackingSettingsOpen'); await pastePage.click('#orbitPasteOpen');
+    await pastePage.fill('#orbitPasteText', iss); await pastePage.click('#orbitPasteSubmit');
+    await pastePage.waitForFunction(() => document.getElementById('satelliteSelect').value === 'import:25544');
+    assert.deepEqual(pasteErrors, []); await paste.context.close();
+    console.log(`PASS paste ${prefix}: invalid/empty input, preserved drafts, TLE/OMM, narrow screens, ongoing reception, shared file imports and offline persistence`);
 
     // Seed a pre-directory database, including a selected manual import and position.
     const legacy = await contextWithFeeds(), legacyPage = await legacy.context.newPage();

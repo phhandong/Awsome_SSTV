@@ -198,7 +198,7 @@
               <button id="trackingLocate" class="btn" type="button" aria-haspopup="dialog" aria-controls="trackingSettings">设置位置</button>
             </div>
           </div>
-          <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><output id="pointingAngle">—</output></div>
+          <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><span id="orientationGuide" role="status" aria-live="polite" aria-atomic="true" hidden></span><output id="pointingAngle">—</output></div>
         </section>
         <section class="tracking-block tracking-image-block" aria-labelledby="trackingImageTitle">
           <div class="tracking-image-heading"><h3 id="trackingImageTitle">实时解码</h3><button id="trackingImageExpand" class="btn-link" type="button" aria-haspopup="dialog" aria-controls="trackingImageDialog"><span aria-hidden="true">⤢</span> 放大 / 保存</button></div>
@@ -254,7 +254,14 @@
           <section class="tracking-block"><h3>手机姿态</h3><p id="orientationStatus" class="tracking-note" role="status">启用后自动校准，方向就绪即可用手机物理顶部指向；请远离磁性配件。</p><div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div><button id="orientationCalibrate" class="btn" type="button" disabled="">手动校准</button><button id="orientationStop" class="btn-link" type="button" hidden="">关闭姿态</button><p class="tracking-note">青色是卫星轨迹，琥珀色是手机顶部。天空图北方在上、圆心为天顶。方向就绪后用手机物理顶部指向目标。</p></section>
           <section class="tracking-block" aria-labelledby="targetLabel">
             <h3 id="targetLabel"><span>01</span> 目标与星历</h3>
-            <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新星历</button><label class="btn import-orbit" for="orbitFile">导入星历<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label></div>
+            <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新星历</button><label class="btn import-orbit" for="orbitFile">导入文件<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label><button id="orbitPasteOpen" class="btn" type="button" aria-expanded="false" aria-controls="orbitPasteForm">粘贴星历</button></div>
+            <form id="orbitPasteForm" class="orbit-paste-form" hidden>
+              <label for="orbitPasteText">星历文本</label>
+              <p id="orbitPasteHint" class="tracking-note">粘贴两行／三行 TLE 或 OMM JSON，支持多颗卫星。请保留 TLE 行内的空格；导入后自动切换到第一颗卫星。</p>
+              <textarea id="orbitPasteText" rows="5" maxlength="1048576" wrap="off" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="orbitPasteHint orbitPasteStatus" placeholder="卫星名称（可选）&#10;1 …&#10;2 …"></textarea>
+              <p id="orbitPasteStatus" class="tracking-note is-warning" role="status"></p>
+              <div class="tracking-actions"><button id="orbitPasteSubmit" class="btn" type="submit">导入文本</button><button id="orbitPasteCancel" class="btn" type="button">取消</button></div>
+            </form>
             <p id="orbitDataStatus" class="tracking-note" role="status">正在读取本机缓存…</p>
             <p id="catalogDataStatus" class="tracking-note" role="status">首次进入跟踪页时检查业余无线电目录。</p>
             <p id="orbitEpoch" class="tracking-note"></p>
