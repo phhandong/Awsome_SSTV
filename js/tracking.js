@@ -5,6 +5,7 @@ import { ISS_ID, mergeCatalog, retainedCatalog } from './tracking-catalog.js';
 import { initSatellitePicker } from './satellite-picker.js';
 import { PhoneOrientation, pointingGuide } from './orientation.js';
 import { initFrequencyPanel } from './frequency-panel.js';
+import { createPassCalendar, exportPassCalendar } from './pass-calendar.js';
 
 const $ = id => document.getElementById(id);
 const localTime = time => new Date(time).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -113,6 +114,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   }
   function configure() {
     generation++; position = null; prediction = null; if (!workerFailed) orbitError = '';
+    $('passCalendarStatus').textContent = '';
     frequency.choices();
     renderPosition(); renderPasses(); renderData();
     if (!record() || !observer || document.hidden) return;
@@ -372,7 +374,24 @@ export function initTracking({ receiver, onActivity = () => {} }) {
       const time = document.createElement('strong'); time.textContent = pass.ongoingStart ? '预测起点已在地平线上方' : localTime(pass.rise);
       const max = document.createElement('span'); max.textContent = `最高 ${degrees(pass.maxElevation)}`;
       const detail = document.createElement('small'); detail.textContent = `最高点 ${localTime(pass.peak)} · ${pass.ongoingEnd ? '24 小时窗口内未落下' : `落下 ${localTime(pass.set)}`}`;
-      row.append(time, max, detail); list.append(row);
+      const actions = document.createElement('div'); actions.className = 'pass-calendar-actions';
+      // Capture the target and location belonging to this prediction, including while the share sheet is open.
+      const satellite = record(), location = observer;
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'btn btn-small btn-secondary'; button.textContent = '添加到日历';
+      button.setAttribute('aria-label', `添加到日历：${satellite.name}，${localTime(pass.rise)}`);
+      button.addEventListener('click', async () => {
+        const status = $('passCalendarStatus'), requestGeneration = generation;
+        button.disabled = true; status.textContent = '正在准备日历事件…';
+        try {
+          const result = await exportPassCalendar(createPassCalendar({ satellite, observer: location, pass }));
+          if (generation === requestGeneration) status.textContent = result === 'cancelled' ? '已取消分享，尚未添加到日历。'
+            : result === 'shared' ? '已分享日历文件；请在 iOS 中打开并确认添加到所选日历。'
+            : '已下载日历文件；请打开并确认添加。iPhone 可通过 Apple Mail 附件导入。';
+        } catch (error) { if (generation === requestGeneration) status.textContent = `日历导出失败：${error.message}`; }
+        finally { button.disabled = false; }
+      });
+      actions.append(button);
+      row.append(time, max, detail, actions); list.append(row);
     }
     renderCountdown();
   }

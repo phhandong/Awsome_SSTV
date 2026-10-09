@@ -33,6 +33,15 @@ async function decodeFixedProbe() {
     return result.pixels.reduce((sum,v)=>sum+v,0);
   } finally {decoder.destroy();}
 }
+async function savedTrackingState(page) {
+  return page.evaluate(async () => {
+    const { TrackingStore } = await import(new URL('./js/tracking-store.js', location.href));
+    const store = new TrackingStore();
+    const keys = ['imports', 'favorites', 'observer', 'selected'];
+    const values = await Promise.all(keys.map(key => store.get(key)));
+    return Object.fromEntries(keys.map((key, i) => [key, values[i]]));
+  });
+}
 try {
   const recordingOnly=process.argv.includes('--recording-ui');
   const dopplerOnly=process.argv.includes('--doppler-ui');
@@ -201,6 +210,28 @@ try {
     await page.click('#observerForm button');
     await page.waitForFunction(()=>document.querySelectorAll('.pass-row').length>0);
     assert.notEqual(await page.textContent('#orbitAz'),'—');
+    const beforeCalendar = await savedTrackingState(page);
+    assert.equal(await page.locator('.pass-row').first().locator('button').count(), 1, 'each pass has a single calendar action');
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: async ({ files }) => {
+        window.calendarShared = { name: files[0].name, type: files[0].type, content: await files[0].text() };
+      } });
+    });
+    await page.locator('.pass-calendar-actions button').first().click();
+    await page.waitForFunction(() => document.getElementById('passCalendarStatus').textContent.includes('已分享'));
+    const sharedCalendar = await page.evaluate(() => window.calendarShared);
+    assert.match(sharedCalendar.name, /\.ics$/); assert.match(sharedCalendar.type, /^text\/calendar/);
+    assert.match(sharedCalendar.content, /DTSTART:\d{8}T\d{6}Z/);
+    assert.equal(await page.locator('#passCalendarStatus').textContent().then(text => text.includes('已添加')), false);
+    await page.evaluate(() => { navigator.share = async () => { throw new DOMException('cancelled', 'AbortError'); }; });
+    await page.locator('.pass-calendar-actions button').first().click();
+    await page.waitForFunction(() => document.getElementById('passCalendarStatus').textContent.includes('已取消'));
+    assert.deepEqual(await savedTrackingState(page), beforeCalendar, 'sharing and cancellation leave tracking data untouched');
+    await page.locator('.pass-calendar-help summary').click();
+    assert.equal(await page.isVisible('.pass-calendar-help .tracking-note'), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await page.screenshot({ path: `test-artifacts/calendar-${prefix === '/' ? 'root' : 'subpath'}.png` });
     await page.click('#refreshOrbit');
     assert.equal(fetches,1,'manual refresh must respect two hours');
     assert.equal(catalogFetches,1,'transponder data has its own two-hour request limit');
@@ -289,6 +320,19 @@ try {
     await page.reload();await page.click('#trackTab');
     await page.waitForFunction(()=>document.querySelectorAll('.pass-row').length>0);
     assert.equal(await page.getAttribute('#satelliteSelect','value'),'import:25544');
+    const beforeUpgrade = await savedTrackingState(page);
+    assert.ok(beforeUpgrade.imports.length > 0, 'upgrade test includes user-imported ephemeris');
+    await page.click('#trackingSettingsOpen');
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false });
+    });
+    const calendarDownload = page.waitForEvent('download');
+    await page.locator('.pass-calendar-actions button').first().click();
+    const downloadedCalendar = await calendarDownload;
+    assert.match(downloadedCalendar.suggestedFilename(), /\.ics$/);
+    assert.match(await readFile(await downloadedCalendar.path(), 'utf8'), /BEGIN:VCALENDAR/);
+    assert.deepEqual(await savedTrackingState(page), beforeUpgrade, 'offline calendar export preserves imported ephemeris');
+    await page.click('#trackingSettingsClose');
     await page.goto(base+prefix+'encode.html');await page.waitForSelector('#encodeBtn');
     await page.click('#encodeBtn'); await page.waitForFunction(()=>!document.getElementById('downloadBtn').disabled);
     await page.goto(base+prefix+'index.html');await page.waitForSelector('#trackTab');
@@ -310,6 +354,8 @@ try {
     await other.close();
     await page.click('#applyAppUpdate');
     await page.waitForFunction(()=>document.querySelector('meta[name="test-release"]').content==='2');
+    await page.waitForFunction(()=>document.getElementById('satelliteSelect').value==='import:25544');
+    assert.deepEqual(await savedTrackingState(page), beforeUpgrade, 'application upgrade preserves ephemeris, favorites, position and selection');
     assert.deepEqual(errors,[]);
     await context.close();
     console.log(`PASS ${prefix}: tracking, simulated permissions/pose, concurrent decode, microphone continuity, background stop, offline RX/TX, atomic update`);
