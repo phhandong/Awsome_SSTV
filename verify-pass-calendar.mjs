@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { createPassCalendar, exportPassCalendar } from './js/pass-calendar.js';
+import { createPassSubscription, readPassSubscription, findCalendarEndpoint } from './js/pass-calendar-subscription.js';
+import { calendarResponse } from './scripts/calendar-feed.mjs';
+import calendarWorker from './worker/calendar.js';
 
 const now = Date.parse('2026-10-09T15:40:00Z');
 const satellite = { id: 'import:25544', name: '国际空间站, ISS; 测试\\名称\nBEGIN:VEVENT', catalogId: '25544', epoch: now - 3600000 };
@@ -27,6 +30,32 @@ assert.match(partial.content.replace(/\r\n /g, ''), /并非实际落下时间/);
 assert.throws(() => createPassCalendar({ ...input, now: pass.set }), /已结束/);
 assert.throws(() => createPassCalendar({ ...input, pass: { ...pass, set: pass.rise } }), /无效/);
 assert.throws(() => createPassCalendar({ ...input, pass: { ...pass, peak: NaN } }), /无效/);
+
+const subscription = createPassSubscription(input, 'https://calendar.example/calendar/pass.ics');
+assert.match(subscription.webcalURL, /^webcal:\/\/calendar\.example\/calendar\/pass\.ics\?data=/);
+const decoded = readPassSubscription(new URL(subscription.url).searchParams.get('data'));
+assert.equal(decoded.satellite.name, satellite.name, 'UTF-8 event names survive the subscription URL');
+assert.deepEqual(decoded.observer, observer);
+assert.equal('elements' in decoded.satellite, false, 'raw imported orbital elements are not sent');
+const response = calendarResponse(new Request(subscription.url));
+assert.equal(response.status, 200); assert.match(response.headers.get('content-type'), /^text\/calendar/);
+assert.equal(response.headers.get('access-control-allow-origin'), '*');
+assert.equal(await response.text(), calendar.content, 'Calendar fetch receives the actual event, not an HTML page');
+assert.equal(await calendarResponse(new Request(subscription.url)).text(), calendar.content, 'refreshes retain timestamps, UID and event content');
+assert.equal(await calendarWorker.fetch(new Request(subscription.url)).text(), calendar.content, 'Worker returns the same event as the local service');
+assert.equal(calendarWorker.fetch(new Request('https://decode.handong-joy.xyz/')).status, 404, 'Worker does not handle unrelated site pages');
+assert.equal(calendarResponse(new Request(subscription.url, { method: 'HEAD' })).status, 200);
+assert.equal(await calendarResponse(new Request(subscription.url, { method: 'HEAD' })).text(), '');
+assert.equal(calendarResponse(new Request(subscription.url, { method: 'POST' })).status, 405);
+assert.equal(calendarResponse(new Request('https://calendar.example/calendar/pass.ics?data=bad')).status, 400);
+assert.equal(calendarResponse(new Request('https://calendar.example/calendar/pass.ics')).status, 400);
+assert.throws(() => readPassSubscription('a'.repeat(8193)));
+assert.throws(() => createPassSubscription(input, 'javascript:alert(1)'), /地址无效/);
+assert.throws(() => createPassSubscription({ ...input, observer: { ...observer, latitude: 91 } }, 'https://calendar.example/feed'), /无效/);
+const fakeFetch = async url => calendarResponse(new Request(url));
+assert.equal(await findCalendarEndpoint('https://calendar.example/calendar/pass.ics', fakeFetch), 'https://calendar.example/calendar/pass.ics');
+assert.equal(await findCalendarEndpoint('https://example/feed', async () => new Response('<html>not a feed</html>')), null);
+assert.equal(await findCalendarEndpoint('https://example/feed', async () => { throw new Error('offline'); }), null);
 
 // Exercise file sharing, cancellation and fallback without writing tracking storage.
 let downloads = 0, shares = 0, removed = 0, revoked = 0;
@@ -57,4 +86,4 @@ try {
   if (originalDocument === undefined) delete globalThis.document; else globalThis.document = originalDocument;
   globalThis.setTimeout = originalTimeout; URL.createObjectURL = originalCreate; URL.revokeObjectURL = originalRevoke;
 }
-console.log('PASS pass calendar: UTC, escaping, UTF-8 folding, reminders, partial passes, share/cancel/download');
+console.log('PASS pass calendar: UTC, escaping, UTF-8 folding, reminders, share/cancel/download, subscription GET/HEAD, stable snapshots, invalid input and unavailable services');

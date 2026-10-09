@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { extname, resolve, relative, isAbsolute } from 'node:path';
 import { chromium } from 'playwright-core';
+import { calendarResponse } from './scripts/calendar-feed.mjs';
 
 await mkdir('test-artifacts', {recursive:true});
 const root=process.cwd(), fixture=await readFile('test-fixtures/iss.json','utf8'), catalogFixture=await readFile('test-fixtures/amateur.json','utf8');
@@ -13,6 +14,10 @@ const server=createServer(async(req,res)=>{
   try {
     let pathname=decodeURIComponent(new URL(req.url,'http://localhost').pathname);
     if(pathname.startsWith('/Awsome_SSTV/')) pathname=pathname.slice('/Awsome_SSTV'.length);
+    if (process.argv.includes('--calendar-subscription') && pathname === '/calendar/pass.ics') {
+      const response = calendarResponse(new Request(new URL(req.url, 'http://localhost'), { method: req.method }));
+      res.writeHead(response.status, Object.fromEntries(response.headers)); res.end(Buffer.from(await response.arrayBuffer())); return;
+    }
     const file=resolve(root,pathname.replace(/^\//,'')||'index.html'), rel=relative(root,file);
     if(rel.startsWith('..')||isAbsolute(rel)) throw Error('invalid path');
     let body=await readFile(file);
@@ -211,7 +216,55 @@ try {
     await page.waitForFunction(()=>document.querySelectorAll('.pass-row').length>0);
     assert.notEqual(await page.textContent('#orbitAz'),'—');
     const beforeCalendar = await savedTrackingState(page);
-    assert.equal(await page.locator('.pass-row').first().locator('button').count(), 1, 'each pass has a single calendar action');
+    assert.equal(await page.locator('.pass-row').first().locator('.pass-calendar-actions .btn').count(), 1, 'each pass has a single calendar action');
+    if (process.argv.includes('--calendar-subscription')) {
+      await page.waitForFunction(() => document.querySelector('.pass-calendar-actions a')?.textContent === '订阅日历');
+      await page.evaluate(() => document.addEventListener('click', event => {
+        const link = event.target.closest('.pass-calendar-actions a');
+        if (link) { window.requestedCalendarURL = link.href; event.preventDefault(); }
+      }));
+      await page.locator('.pass-calendar-actions a').first().click();
+      await page.waitForFunction(() => document.getElementById('passCalendarSubscriptionURL').value.includes('?data='));
+      const feedURL = await page.inputValue('#passCalendarSubscriptionURL');
+      assert.equal(await page.evaluate(() => window.requestedCalendarURL), feedURL.replace(/^http:/, 'webcal:'), 'the native link targets the system calendar scheme');
+      assert.ok(feedURL.startsWith(base + prefix + 'calendar/pass.ics?data='), 'root and GitHub Pages subpaths resolve correctly');
+      const feed = await context.request.get(feedURL);
+      assert.equal(feed.status(), 200); assert.match(feed.headers()['content-type'], /^text\/calendar/);
+      assert.match(await feed.text(), /DTSTART:\d{8}T\d{6}Z/);
+      assert.match(await page.textContent('#passCalendarStatus'), /请确认订阅/);
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'hidden', { configurable: true, value: true }); document.dispatchEvent(new Event('visibilitychange'));
+        Object.defineProperty(document, 'hidden', { configurable: true, value: false }); document.dispatchEvent(new Event('visibilitychange'));
+      });
+      assert.equal(await page.inputValue('#passCalendarSubscriptionURL'), feedURL, 'returning from Calendar preserves the fallback address');
+      await page.locator('.pass-calendar-help summary').click();
+      await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.copiedCalendarURL = value; } } }));
+      await page.click('#passCalendarCopy');
+      assert.equal(await page.evaluate(() => window.copiedCalendarURL), feedURL);
+      await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('denied'); } } }));
+      await page.click('#passCalendarCopy');
+      assert.match(await page.textContent('#passCalendarStatus'), /长按地址/);
+      assert.equal(await page.evaluate(() => { const input = document.getElementById('passCalendarSubscriptionURL'); return input.selectionEnd - input.selectionStart; }), feedURL.length);
+      await page.evaluate(() => {
+        Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
+        Object.defineProperty(navigator, 'share', { configurable: true, value: async ({ files }) => { window.calendarShared = await files[0].text(); } });
+      });
+      await page.click('#passCalendarFile');
+      await page.waitForFunction(() => document.getElementById('passCalendarStatus').textContent.includes('已分享'));
+      assert.equal(await page.evaluate(() => window.calendarShared), await feed.text());
+      await page.setViewportSize({ width: 320, height: 844 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+      assert.equal(await page.evaluate(() => { const row = document.querySelector('.pass-row'), button = row.querySelector('.btn'); return button.getBoundingClientRect().top < row.querySelector('small').getBoundingClientRect().top; }), true, 'subscription stays on the first row');
+      assert.deepEqual(await savedTrackingState(page), beforeCalendar, 'subscription and file fallback preserve tracking data');
+      await page.fill('#observerLat', '32'); await page.click('#observerForm button');
+      assert.equal(await page.inputValue('#passCalendarSubscriptionURL'), '', 'changing location clears the old subscription tools');
+      assert.equal(await page.isVisible('#passCalendarSubscriptionTools'), false);
+      assert.deepEqual(errors, []);
+      await page.screenshot({ path: `test-artifacts/calendar-subscription-${prefix === '/' ? 'root' : 'subpath'}.png` });
+      await context.close();
+      console.log(`PASS calendar subscription ${prefix}: endpoint, system calendar launch request, copy/fallback, 320px layout, event content and retained tracking data`);
+      continue;
+    }
     await page.evaluate(() => {
       Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => true });
       Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: async ({ files }) => {

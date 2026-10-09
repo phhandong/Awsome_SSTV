@@ -6,6 +6,7 @@ import { initSatellitePicker } from './satellite-picker.js';
 import { PhoneOrientation, pointingGuide } from './orientation.js';
 import { initFrequencyPanel } from './frequency-panel.js';
 import { createPassCalendar, exportPassCalendar } from './pass-calendar.js';
+import { createPassSubscription, findCalendarEndpoint } from './pass-calendar-subscription.js';
 
 const $ = id => document.getElementById(id);
 const localTime = time => new Date(time).toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -34,6 +35,33 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   });
   const record = () => records.find(item => item.id === selected);
   let orbitError = '';
+  let calendarEndpoint = null, calendarFile = null, calendarContext = null;
+  const calendarContextKey = (satellite, location) => JSON.stringify([satellite?.id, satellite?.epoch, location?.latitude, location?.longitude, location?.altitude]);
+  const configuredCalendarEndpoint = document.querySelector('meta[name="calendar-feed-url"]')?.content.trim();
+  void findCalendarEndpoint(new URL(configuredCalendarEndpoint || './calendar/pass.ics', document.baseURI).href).then(endpoint => {
+    calendarEndpoint = endpoint;
+    if (endpoint && prediction) renderPasses();
+  });
+  $('passCalendarCopy').addEventListener('click', async () => {
+    const input = $('passCalendarSubscriptionURL');
+    try {
+      await navigator.clipboard.writeText(input.value);
+      $('passCalendarStatus').textContent = '已复制订阅地址；在日历 App 中添加订阅日历并粘贴即可。';
+    } catch (_) {
+      input.focus(); input.select(); input.setSelectionRange(0, input.value.length);
+      $('passCalendarStatus').textContent = '请长按地址并复制，再到日历 App 中添加订阅日历。';
+    }
+  });
+  $('passCalendarFile').addEventListener('click', () => { if (calendarFile) void shareCalendarFile(calendarFile); });
+  async function shareCalendarFile(calendar) {
+    const requestGeneration = generation, status = $('passCalendarStatus');
+    try {
+      const result = await exportPassCalendar(calendar);
+      if (generation === requestGeneration) status.textContent = result === 'cancelled' ? '已取消分享，尚未添加到日历。'
+        : result === 'shared' ? '已分享日历文件；请在 iOS 中打开并确认添加到所选日历。'
+        : '已下载日历文件；请打开并确认添加。iPhone 可通过 Apple Mail 附件导入。';
+    } catch (error) { if (generation === requestGeneration) status.textContent = `日历导出失败：${error.message}`; }
+  }
   const frequency = initFrequencyPanel({ store, catalog: () => normalizeCatalogId(record()?.catalogId || '25544'),
     position: () => position, epoch: () => record()?.epoch,
     unavailable: () => !observer ? '请在设置中填写或获取观测位置' : !record() ? '等待有效星历' : orbitError || '等待实时轨道计算…' });
@@ -115,6 +143,9 @@ export function initTracking({ receiver, onActivity = () => {} }) {
   function configure() {
     generation++; position = null; prediction = null; if (!workerFailed) orbitError = '';
     $('passCalendarStatus').textContent = '';
+    if (calendarContext !== calendarContextKey(record(), observer)) {
+      $('passCalendarSubscriptionTools').hidden = true; $('passCalendarSubscriptionURL').value = ''; calendarFile = null; calendarContext = null;
+    }
     frequency.choices();
     renderPosition(); renderPasses(); renderData();
     if (!record() || !observer || document.hidden) return;
@@ -375,19 +406,33 @@ export function initTracking({ receiver, onActivity = () => {} }) {
       const max = document.createElement('span'); max.textContent = `最高 ${degrees(pass.maxElevation)}`;
       const detail = document.createElement('small'); detail.textContent = `最高点 ${localTime(pass.peak)} · ${pass.ongoingEnd ? '24 小时窗口内未落下' : `落下 ${localTime(pass.set)}`}`;
       const actions = document.createElement('div'); actions.className = 'pass-calendar-actions';
-      // Capture the target and location belonging to this prediction, including while the share sheet is open.
+      // Capture the target and location belonging to this prediction.
       const satellite = record(), location = observer;
-      const button = document.createElement('button'); button.type = 'button'; button.className = 'btn btn-small btn-secondary'; button.textContent = '添加到日历';
-      button.setAttribute('aria-label', `添加到日历：${satellite.name}，${localTime(pass.rise)}`);
-      button.addEventListener('click', async () => {
+      const input = { satellite, observer: location, pass, now: Date.now() };
+      const subscription = calendarEndpoint && pass.set > input.now ? createPassSubscription(input, calendarEndpoint) : null;
+      const button = document.createElement(subscription ? 'a' : 'button');
+      if (subscription) button.href = subscription.webcalURL;
+      else button.type = 'button';
+      button.className = 'btn btn-small btn-secondary'; button.textContent = subscription ? '订阅日历' : '添加到日历';
+      button.setAttribute('aria-label', `${button.textContent}：${satellite.name}，${localTime(pass.rise)}`);
+      button.addEventListener('click', async event => {
         const status = $('passCalendarStatus'), requestGeneration = generation;
         button.disabled = true; status.textContent = '正在准备日历事件…';
         try {
-          const result = await exportPassCalendar(createPassCalendar({ satellite, observer: location, pass }));
-          if (generation === requestGeneration) status.textContent = result === 'cancelled' ? '已取消分享，尚未添加到日历。'
-            : result === 'shared' ? '已分享日历文件；请在 iOS 中打开并确认添加到所选日历。'
-            : '已下载日历文件；请打开并确认添加。iPhone 可通过 Apple Mail 附件导入。';
-        } catch (error) { if (generation === requestGeneration) status.textContent = `日历导出失败：${error.message}`; }
+          // Reject an expired prediction, while retaining the timestamp encoded in this link.
+          createPassCalendar({ ...input, now: Date.now() });
+          const calendar = createPassCalendar(input);
+          if (subscription) {
+            calendarFile = calendar;
+            calendarContext = calendarContextKey(satellite, location);
+            $('passCalendarSubscriptionURL').value = subscription.url;
+            $('passCalendarSubscriptionTools').hidden = false;
+            status.textContent = '已请求打开日历订阅界面，请确认订阅。若未跳转，可在下方说明中复制订阅地址。';
+            // The anchor's native webcal navigation runs directly from this user click.
+          } else {
+            await shareCalendarFile(calendar);
+          }
+        } catch (error) { event.preventDefault(); if (generation === requestGeneration) status.textContent = `日历导出失败：${error.message}`; }
         finally { button.disabled = false; }
       });
       actions.append(button);

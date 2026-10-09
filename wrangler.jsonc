@@ -1,0 +1,12 @@
+{
+  "name": "awesome-sstv-calendar",
+  "main": "worker/calendar.js",
+  "compatibility_date": "2026-10-09",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "decode.handong-joy.xyz/calendar/pass.ics*", "zone_name": "handong-joy.xyz" }
+  ],
+  // Subscription URLs contain observation coordinates; do not record invocation URLs.
+  "observability": { "enabled": false }
+}

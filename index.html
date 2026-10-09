@@ -9,6 +9,7 @@
   <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
   <meta name="description" content="浏览器内 SSTV 慢扫描电视解码终端，支持文件与实时接收。">
   <meta name="theme-color" content="#070c0e">
+  <meta name="calendar-feed-url" content="">
   <title>Awesome SSTV · 解码终端</title>
   <link rel="stylesheet" href="./css/fonts.css">
   <link rel="stylesheet" href="./css/main.css">
@@ -290,8 +291,15 @@
             <p id="passCalendarStatus" class="tracking-note" role="status" aria-live="polite"></p>
             <details class="pass-calendar-help">
               <summary>如何添加到 iPhone 日历</summary>
-              <p class="tracking-note">点击过境旁的“添加到日历”分享日历文件；不支持分享时会自动下载。若未出现添加入口，可将文件通过 Apple Mail 发给自己，在收到的邮件中点开附件，选择日历并确认添加。网页无法确认是否已写入日历。</p>
-              <p class="tracking-note">事件包含观测位置、起止时间和最高仰角；距离升起超过 5 分钟时附带提前 5 分钟提醒。日历事件不会随星历更新，重复导入前请检查已有事件。</p>
+              <p class="tracking-note">点击“订阅日历”打开 iPhone 日历的订阅界面，再确认订阅，无需先保存文件。若没有跳转，请用 Safari 打开，或复制下方地址，在日历 App 中添加订阅日历。</p>
+              <div id="passCalendarSubscriptionTools" hidden>
+                <label for="passCalendarSubscriptionURL">本次过境订阅地址</label>
+                <input id="passCalendarSubscriptionURL" type="text" readonly spellcheck="false">
+                <div class="btn-row"><button id="passCalendarCopy" type="button" class="btn btn-small btn-secondary">复制订阅地址</button><button id="passCalendarFile" type="button" class="btn btn-small btn-secondary">改用日历文件</button></div>
+                <p class="tracking-note">地址包含本次过境和观测位置。订阅是只读的预测快照，不随星历更新。</p>
+              </div>
+              <p class="tracking-note">若显示“添加到日历”，当前网站尚未提供订阅服务，可分享日历文件；不支持分享时自动下载。iPhone 可用 Apple Mail 打开附件导入。网页无法确认是否已写入日历。</p>
+              <p class="tracking-note">事件包含观测位置、起止时间、最高仰角及提前 5 分钟提醒（提醒时间未过时）。每个地址只包含所选过境；星历或位置变化后请重新核对，重复添加前检查已有事件。</p>
             </details>
             <p class="tracking-note">时间为本机时区。过境以几何地平线计算，不代表肉眼可见、无遮挡或正在发射 SSTV。</p>
           </section>
