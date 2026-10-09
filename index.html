@@ -200,7 +200,11 @@
               <button id="trackingLocate" class="btn" type="button" aria-haspopup="dialog" aria-controls="trackingSettings">设置位置</button>
             </div>
           </div>
-          <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><span id="orientationGuide" role="status" aria-live="polite" aria-atomic="true" hidden></span><output id="pointingAngle">—</output></div>
+          <div class="pointing-command"><span id="pointingHint">设置观测位置，开始轨道预测</span><span id="orientationGuide" hidden>
+            <span id="orientationIcon" class="orientation-icon" aria-hidden="true">↗</span>
+            <span class="orientation-copy" role="status" aria-live="polite" aria-atomic="true"><strong id="orientationTitle"></strong><span id="orientationDetail"></span></span>
+            <progress id="orientationProgress" max="100" value="0" aria-label="方向对齐进度" hidden></progress>
+          </span><output id="pointingAngle">—</output></div>
         </section>
         <section class="tracking-block tracking-image-block" aria-labelledby="trackingImageTitle">
           <div class="tracking-image-heading"><h3 id="trackingImageTitle">实时解码</h3><button id="trackingImageExpand" class="btn-link" type="button" aria-haspopup="dialog" aria-controls="trackingImageDialog"><span aria-hidden="true">⤢</span> 放大 / 保存</button></div>
@@ -255,7 +259,7 @@
             </form>
             <p id="frequencyError" class="tracking-note is-warning" role="status"></p>
           </section>
-          <section class="tracking-block"><h3>手机姿态</h3><p id="orientationStatus" class="tracking-note" role="status">启用后自动校准，方向就绪即可用手机物理顶部指向；请远离磁性配件。</p><div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div><button id="orientationCalibrate" class="btn" type="button" disabled="">手动校准</button><button id="orientationStop" class="btn-link" type="button" hidden="">关闭姿态</button><p class="tracking-note">青色是卫星轨迹，琥珀色是手机顶部。天空图北方在上、圆心为天顶。方向就绪后用手机物理顶部指向目标。</p></section>
+          <section class="tracking-block"><h3>手机姿态</h3><p id="orientationStatus" class="tracking-note" role="status">开启后平放约 2 秒，对齐方向参考，再用手机物理顶部指向。</p><div class="pose-readouts"><span>朝向 <output id="poseAz">—</output></span><span>俯仰 <output id="poseEl">—</output></span><span>横滚 <output id="poseRoll">—</output></span></div><button id="orientationCalibrate" class="btn" type="button" disabled="">重新对齐</button><button id="orientationStop" class="btn-link" type="button" hidden="">关闭姿态</button><p class="tracking-note">青色是卫星轨迹，琥珀色是手机顶部。天空图北方在上、圆心为天顶。方向就绪后用手机物理顶部指向目标。平放对齐不会校准系统磁传感器；如方向仍有明显偏差，请先对照系统指南针，检查磁性配件与观测位置。</p></section>
           <section class="tracking-block" aria-labelledby="targetLabel">
             <h3 id="targetLabel"><span>01</span> 目标与星历</h3>
             <div class="tracking-actions"><button id="refreshOrbit" class="btn" type="button">更新星历</button><label class="btn import-orbit" for="orbitFile">导入文件<input id="orbitFile" type="file" accept=".txt,.tle,.json,text/plain,application/json" aria-label="导入 TLE 或 OMM JSON"></label><button id="orbitPasteOpen" class="btn" type="button" aria-expanded="false" aria-controls="orbitPasteForm">粘贴星历</button></div>

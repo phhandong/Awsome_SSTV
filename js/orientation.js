@@ -45,7 +45,7 @@ export function pointingGuide(pose, target, now = Date.now()) {
   const a = target.azimuth * D, e = target.elevation * D;
   const vector = [Math.sin(a) * Math.cos(e), Math.cos(a) * Math.cos(e), Math.sin(e)];
   const angle = Math.acos(clamp(vector.reduce((sum, v, i) => sum + v * pose.vector[i], 0))) / D;
-  if (pose.accuracy > 20) return { text: '指南针精度较低 · 远离磁性配件并重新校准', angle };
+  if (pose.accuracy > 20) return { text: '指南针精度不足 · 等待读数稳定', angle: null };
   if (angle < 5) return { text: '已接近目标方向', angle };
   const delta = angleDelta(target.azimuth, pose.azimuth), lift = target.elevation - pose.elevation;
   const parts = [];
@@ -54,31 +54,51 @@ export function pointingGuide(pose, target, now = Date.now()) {
   return { text: parts.join(' · ') || '接近天顶 · 按夹角缓慢调整', angle };
 }
 
+const CALIBRATION_MS = 2000;
+const BAD_READING_GRACE_MS = 1500;
+const RECOVERY_MS = 500;
+const isFlat = s => Math.abs(s.beta) <= 12 && Math.abs(s.gamma) <= 12;
+
+// These fields describe availability / estimated error, not magnetic interference.
+function compassIssue({ heading, accuracy }) {
+  if (!Number.isFinite(heading) || heading < 0 || !Number.isFinite(accuracy))
+    return { state: 'waiting', title: '等待罗盘数据', message: '浏览器尚未提供有效读数，请稍候' };
+  if (accuracy < 0)
+    return { state: 'waiting', title: '系统罗盘尚未就绪', message: '可缓慢转动手机，再屏幕朝上平放' };
+  if (accuracy > 20)
+    return { state: 'accuracy', title: '方向精度不足', message: '暂不显示指向，读数稳定后自动恢复' };
+  return null;
+}
+
 export class PhoneOrientation {
   constructor(onChange) {
     this.onChange = onChange; this.enabled = false; this.offset = null; this.declination = null;
-    this.pose = null; this.lastRender = 0; this.sample = null;
+    this.pose = null; this.lastRender = 0; this.sample = null; this.lastSampleTime = null; this.enabledAt = null;
     this.listening = false; this.referenceTime = null; this.checkResumedReference = false;
-    this.guideComplete = false; this.calibrationSamples = []; this.waitStarted = Date.now();
+    this.badSince = null; this.goodSince = null;
+    this.guideComplete = false; this.calibrationSamples = [];
     try { this.guideComplete = globalThis.localStorage?.getItem(GUIDE_KEY) === '1'; } catch (_) { /* Storage is optional. */ }
     this.handle = event => this.consume(event);
   }
   setObserver(observer) {
-    try { this.declination = declinationAt(observer); this.invalidate('位置已更新，正在自动校正方向…'); }
-    catch (error) { this.declination = null; this.invalidate(error.message); }
+    try { this.declination = declinationAt(observer); this.invalidate('位置已更新，请屏幕朝上平放约 2 秒'); }
+    catch (error) { this.declination = null; this.invalidate(error.message, '需要有效观测位置', 'waiting'); }
   }
-  invalidate(message) {
-    this.offset = null; this.pose = null; this.calibrationSamples = []; this.waitStarted = Date.now();
+  invalidate(message, title = '重新对齐方向', state = 'flat') {
+    this.offset = null; this.pose = null; this.calibrationSamples = []; this.lastRender = 0;
     this.referenceTime = null; this.checkResumedReference = false;
-    this.pending(message);
+    this.badSince = null; this.goodSince = null;
+    this.pending(message, state, title);
   }
-  pending(message) {
-    if (this.pendingMessage === message) return;
-    this.pendingMessage = message;
-    this.onChange({ valid: false, message });
+  pending(message, state = 'waiting', title = '等待方向数据', progress = null) {
+    this.pose = null; this.lastRender = 0;
+    const key = JSON.stringify([message, state, title, progress]);
+    if (this.pendingKey === key) return;
+    this.pendingKey = key; this.pendingMessage = message;
+    this.onChange({ valid: false, message, state, title, progress });
   }
   rememberGuide() {
-    this.guideComplete = true; this.pendingMessage = null;
+    this.guideComplete = true;
     // Persist onboarding only: an offset belongs to this sensor session.
     try { globalThis.localStorage?.setItem(GUIDE_KEY, '1'); } catch (_) { /* Continue in memory. */ }
   }
@@ -87,116 +107,119 @@ export class PhoneOrientation {
     if (!window.isSecureContext) throw new Error('姿态功能需要 HTTPS');
     const api = window.DeviceOrientationEvent;
     if (!api) throw new Error('当前设备不支持姿态传感器');
-    // Called directly from the click handler, before any unrelated await.
-    if (typeof api.requestPermission === 'function' && await api.requestPermission() !== 'granted') throw new Error('运动权限未允许，请在 Safari 网站设置中检查权限后重试');
-    this.enabled = true;
+    // Keep permission within the initiating user gesture, including iOS Chrome.
+    if (typeof api.requestPermission === 'function' && await api.requestPermission() !== 'granted') throw new Error('运动权限未允许，请在浏览器设置中检查权限后重试');
+    this.enabled = true; this.enabledAt = Date.now();
     this.resume();
-    this.invalidate(this.guideComplete ? '请将手机屏幕朝上平放约 2 秒，自动校准' : '首次使用 · 请将手机屏幕朝上平放约 2 秒');
+    this.invalidate('屏幕朝上，保持平放约 2 秒', this.guideComplete ? '准备对齐方向' : '首次使用 · 对齐方向');
   }
   calibrate() {
-    const s = this.sample;
-    if (!s || Date.now() - s.time > 2000) throw new Error('尚未收到姿态数据，请检查运动权限');
+    if (!this.enabled) throw new Error('请先开启指向');
+    if (!this.sample || Date.now() - this.sample.time > 2000) throw new Error('尚未收到姿态数据，请检查运动权限');
     if (this.declination == null) throw new Error('请先设置有效观测位置');
-    if (Math.abs(s.beta) > 15 || Math.abs(s.gamma) > 15) throw new Error('请将手机屏幕朝上平放后校准');
-    if (!Number.isFinite(s.heading) || s.heading < 0 || !Number.isFinite(s.accuracy) || s.accuracy < 0 || s.accuracy > 20) throw new Error('指南针数据不可靠，请远离金属和磁性配件后重试');
-    this.offset = angleDelta(s.heading + this.declination, vectorAngles(topVector(s.alpha, s.beta)).azimuth);
-    this.pose = null; this.referenceTime = s.time; this.lastRender = 0;
-    this.rememberGuide();
-    this.consume(s);
+    // A manual retry uses the same quality and stability gate as auto alignment.
+    // One sample cannot certify a heading, nor calibrate the phone magnetometer.
+    this.invalidate('屏幕朝上，保持平放约 2 秒');
   }
   autoCalibrate(sample) {
-    const { time, alpha, beta, gamma, heading, accuracy } = sample;
-    if (!Number.isFinite(heading) || heading < 0 || !Number.isFinite(accuracy) || accuracy < 0 || accuracy > 20) {
+    const { time, alpha, beta, heading } = sample;
+    if (!isFlat(sample)) {
       this.calibrationSamples = [];
-      this.pending('指南针数据不可靠，请远离磁性配件；恢复后将自动校准');
-      return false;
-    }
-    if (Math.abs(beta) > 12 || Math.abs(gamma) > 12) {
-      this.calibrationSamples = [];
-      if (time - this.waitStarted > 2000) this.pending('请将手机屏幕朝上短暂平放，自动恢复指向');
+      this.pending('屏幕朝上，保持平放约 2 秒', 'flat', this.checkResumedReference ? '请平放核验方向' : '请将手机平放');
       return false;
     }
     const offset = angleDelta(heading + this.declination, vectorAngles(topVector(alpha, beta)).azimuth);
     const samples = this.calibrationSamples, first = samples[0], last = samples.at(-1);
-    if (last && (time - last.time > 500 || Math.abs(angleDelta(offset, first.offset)) > 5 || Math.abs(angleDelta(heading, first.heading)) > 5)) samples.length = 0;
+    if (last && (time < last.time || time - last.time > 500 || Math.abs(angleDelta(offset, first.offset)) > 5 || Math.abs(angleDelta(heading, first.heading)) > 5)) samples.length = 0;
     samples.push({ offset, heading, time });
-    this.pending(this.guideComplete ? '自动校准中 · 请保持平放约 2 秒' : '首次校准中 · 请保持平放约 2 秒');
-    if (time - samples[0].time < 2000 || samples.length < 10) return false;
-    // Circular mean keeps 359° / 0° samples adjacent.
+    const elapsed = time - samples[0].time;
+    this.pending('保持平放约 2 秒，完成后即可抬起', 'calibrating', '正在对齐方向', Math.min(100, Math.floor(elapsed / CALIBRATION_MS * 10) * 10));
+    if (elapsed < CALIBRATION_MS || samples.length < 10) return false;
     this.offset = Math.atan2(samples.reduce((sum, s) => sum + Math.sin(s.offset * D), 0), samples.reduce((sum, s) => sum + Math.cos(s.offset * D), 0)) / D;
-    this.calibrationSamples = []; this.pose = null; this.lastRender = 0;
+    this.referenceTime = time; this.checkResumedReference = false;
+    this.calibrationSamples = []; this.badSince = null; this.goodSince = null;
     this.rememberGuide();
     return true;
   }
+  suspendForReading(message, state, title, now) {
+    this.calibrationSamples = []; this.goodSince = null;
+    this.badSince ??= now;
+    // Brief faults hide the pointer but retain its reference. Sustained faults
+    // require a fresh flat check before any direction is displayed again.
+    if (this.offset != null && now - this.badSince >= BAD_READING_GRACE_MS) this.checkResumedReference = true;
+    this.pending(message, state, title);
+  }
   consume(event) {
+    if (!this.enabled) return;
+    const now = Date.now(), previousTime = this.lastSampleTime;
+    this.lastSampleTime = now;
+    // A fresh event must replace the UI's stale-data notice even when the
+    // sensor's pending state text is unchanged (e.g. flat check after resume).
+    if (previousTime != null && (now < previousTime || now - previousTime > 2000)) this.pendingKey = null;
+    if (this.offset != null && previousTime != null) {
+      const gap = now - previousTime;
+      if (gap < 0 || gap > ORIENTATION_REUSE_MS) this.invalidate('方向参考已过期，请平放约 2 秒');
+      else if (gap > 2000) { this.checkResumedReference = true; this.calibrationSamples = []; }
+    }
     const alpha = event.alpha, beta = event.beta, gamma = event.gamma;
     if (![alpha, beta, gamma].every(value => typeof value === 'number' && Number.isFinite(value))) {
-      if (this.enabled) this.invalidate('姿态数据失效，恢复后将自动校准');
+      this.sample = null;
+      this.suspendForReading('姿态数据暂不可用，恢复后自动重试', 'waiting', '等待姿态数据', now);
       return;
     }
-    const now = Date.now();
     const heading = event.webkitCompassHeading ?? event.heading;
     const accuracy = event.webkitCompassAccuracy ?? event.accuracy;
     this.sample = { alpha, beta, gamma, heading, accuracy, time: now };
-    if (this.offset != null && this.referenceTime != null &&
-        (now < this.referenceTime || now - this.referenceTime > ORIENTATION_REUSE_MS)) {
-      this.invalidate('校准已过期 · 请将手机屏幕朝上平放约 2 秒');
-    }
-    if (this.checkResumedReference) {
-      if (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 20) {
-        this.invalidate('指南针精度不足 · 请远离磁性配件后平放校准');
-      } else if (Math.abs(beta) < 12 && Math.abs(gamma) < 12 && Number.isFinite(heading) && heading >= 0) {
-        // Some browsers restart their relative sensor frame in the background.
-        // Only compare compass and gyro while flat; tilted headings vary by device.
-        const desired = angleDelta(heading + this.declination, vectorAngles(topVector(alpha, beta)).azimuth);
-        if (Math.abs(angleDelta(desired, this.offset)) > 15) {
-          this.invalidate('方向参考已变化 · 请保持平放约 2 秒');
-        }
-        this.checkResumedReference = false;
+    if (this.declination == null) { this.pending('设置观测位置后即可对齐方向', 'waiting', '需要观测位置'); return; }
+    const issue = compassIssue(this.sample);
+    if (issue) { this.suspendForReading(issue.message, issue.state, issue.title, now); return; }
+    if (this.badSince != null) {
+      if (now - this.badSince >= BAD_READING_GRACE_MS && this.goodSince == null) this.checkResumedReference = this.offset != null;
+      this.goodSince ??= now;
+      if (this.offset != null && !this.checkResumedReference && now - this.goodSince < RECOVERY_MS) {
+        this.pending('正在确认读数稳定，无需重新校准', 'waiting', '读数恢复中'); return;
       }
+      this.badSince = null; this.goodSince = null;
     }
-    if (this.declination == null) { if (this.enabled) this.pending('请先设置有效观测位置，随后自动校准方向'); return; }
-    const initializing = this.offset == null;
-    if (this.offset == null && (!this.enabled || !this.autoCalibrate(this.sample))) return;
+    const initializing = this.offset == null || this.checkResumedReference;
+    if (initializing && !this.autoCalibrate(this.sample)) return;
     if (now - this.lastRender < 1000 / 30) return;
-    if (typeof heading !== 'number' || !Number.isFinite(heading) || heading < 0 || !Number.isFinite(accuracy) || accuracy < 0) {
-      this.invalidate('指南针数据失效，恢复后将自动校准'); return;
-    }
     const weight = 1 - Math.exp(-(now - this.lastRender) / 90);
-    this.lastRender = now;
-    // Refresh the magnetic reference only when flat; tilted compass heading
-    // differs between implementations, while alpha/beta track the calibrated ray.
-    if (!initializing && Math.abs(beta) < 12 && Math.abs(gamma) < 12 && accuracy <= 20) {
+    // Correct only a flat heading. Never refresh the reference age using a
+    // tilted compass accuracy value: it cannot validate the relative frame.
+    if (!initializing && isFlat(this.sample)) {
       const desired = angleDelta(heading + this.declination, vectorAngles(topVector(alpha, beta)).azimuth);
-      this.offset += angleDelta(desired, this.offset) * weight;
+      if (Math.abs(angleDelta(desired, this.offset)) > 15) {
+        this.checkResumedReference = true; this.calibrationSamples = [];
+        this.autoCalibrate(this.sample); return;
+      }
+      this.offset = angleDelta(this.offset + angleDelta(desired, this.offset) * weight, 0);
+      this.referenceTime = now;
     }
     const vector = smoothVector(this.pose?.vector, topVector(alpha, beta, this.offset), weight);
+    this.lastRender = now;
     this.pose = { valid: true, time: now, vector, ...vectorAngles(vector), roll: gamma, accuracy };
-    if (accuracy <= 20) this.referenceTime = now;
-    this.pendingMessage = null;
+    this.pendingKey = null; this.pendingMessage = null;
     this.onChange(this.pose);
   }
   pause() {
     if (!this.listening) return;
     window.removeEventListener('deviceorientation', this.handle); this.listening = false;
-    // Retain only the in-memory reference, never a stale displayed direction.
-    this.sample = null; this.pose = null; this.lastRender = 0; this.calibrationSamples = [];
-    this.pending('姿态已暂停 · 短暂离开可继续使用本次校准');
+    this.sample = null; this.calibrationSamples = [];
+    this.pending('返回后请短暂平放，核验方向参考', 'waiting', '指向已暂停');
   }
   resume() {
     if (!this.enabled || this.listening) return;
-    if (this.offset != null) {
-      const age = Date.now() - this.referenceTime;
-      if (this.referenceTime != null && age >= 0 && age <= ORIENTATION_REUSE_MS) {
-        this.checkResumedReference = true;
-        this.pending('正在恢复指向 · 无需重新平放');
-      } else this.invalidate('校准已过期 · 请将手机屏幕朝上平放约 2 秒');
-    } else {
-      this.waitStarted = Date.now();
-      this.pending('请将手机屏幕朝上平放约 2 秒，自动校准');
-    }
+    const age = Date.now() - this.lastSampleTime;
+    if (this.offset != null && this.lastSampleTime != null && age >= 0 && age <= ORIENTATION_REUSE_MS) {
+      this.checkResumedReference = true;
+      this.pending('屏幕朝上，保持平放约 2 秒', 'flat', '请平放核验方向');
+    } else this.invalidate('屏幕朝上，保持平放约 2 秒', this.offset != null ? '方向参考已过期' : '准备对齐方向');
     this.listening = true;
     window.addEventListener('deviceorientation', this.handle);
   }
-  stop() { this.enabled = false; this.pause(); this.sample = null; this.invalidate('姿态已关闭'); }
+  stop() {
+    this.enabled = false; this.pause(); this.sample = null; this.lastSampleTime = null;
+    this.invalidate('再次开启后自动对齐方向', '指向已关闭', 'waiting');
+  }
 }

@@ -329,7 +329,7 @@ export function initTracking({ receiver, onActivity = () => {} }) {
       .catch(error => { $('orientationStatus').textContent = error.message; $('orientationStatus').classList.add('is-warning'); $('orientationEnable').disabled = false; renderPose(); });
   });
   $('orientationCalibrate').addEventListener('click', () => {
-    try { orientation.calibrate(); poseMessage = '已校准 · 用手机物理顶部指向目标'; renderPose(); }
+    try { orientation.calibrate(); renderPose(); }
     catch (error) { $('orientationStatus').textContent = error.message; }
   });
   $('orientationStop').addEventListener('click', () => {
@@ -378,23 +378,31 @@ export function initTracking({ receiver, onActivity = () => {} }) {
     $('poseRoll').textContent = fresh ? degrees(pose.roll) : '—';
     const guide = pointingGuide(fresh ? pose : null, position);
     const pending = orientation.enabled && !fresh;
-    const ready = fresh && pose.accuracy <= 20 && Date.now() < poseReadyUntil;
-    const notice = pending ? (pose?.valid ? '等待新的方向数据…' : poseMessage)
-      : fresh && pose.accuracy > 20 ? '指南针精度较低 · 请远离磁性配件后平放'
-      : ready ? '方向已就绪 · 可抬起手机指向' : '';
+    const ready = fresh && Date.now() < poseReadyUntil;
+    const silent = Date.now() - (orientation.lastSampleTime ?? orientation.enabledAt) > 2000;
+    const notice = pending ? (pose?.valid || silent
+      ? { title: '等待方向数据', message: '暂未收到新读数，请检查运动权限', state: 'waiting' }
+      : { title: pose?.title || '等待方向数据', message: poseMessage, state: pose?.state || 'waiting', progress: pose?.progress })
+      : ready ? { title: '方向已就绪', message: '用手机物理顶部指向目标', state: 'ready' } : null;
     const noticeElement = $('orientationGuide');
-    if (noticeElement.textContent !== notice) noticeElement.textContent = notice;
     noticeElement.hidden = !notice;
+    if (notice) {
+      // Only mutate live text when its meaning changes; progress stays outside
+      // the live region so sensor events do not repeat announcements.
+      if ($('orientationTitle').textContent !== notice.title) $('orientationTitle').textContent = notice.title;
+      if ($('orientationDetail').textContent !== notice.message) $('orientationDetail').textContent = notice.message;
+      $('orientationIcon').textContent = { flat: '↗', calibrating: '◎', ready: '✓', accuracy: '!', waiting: '· · ·' }[notice.state] || '· · ·';
+      $('orientationProgress').hidden = notice.progress == null;
+      if (notice.progress != null) $('orientationProgress').value = notice.progress;
+    }
     $('pointingHint').hidden = !!notice;
     $('pointingAngle').hidden = !!notice || guide.angle == null;
-    noticeElement.parentElement.dataset.state = !notice ? 'pointing' : ready ? 'ready'
-      : /无需重新平放/.test(notice) ? 'waiting'
-      : /平放|校准/.test(notice) && !/精度|不可靠|不足|失效/.test(notice) ? 'calibrating' : pending ? 'waiting' : 'warning';
+    noticeElement.parentElement.dataset.state = notice?.state || 'pointing';
     $('pointingHint').textContent = !orientation.enabled && $('orientationStatus').classList.contains('is-warning')
       ? '方向未就绪 · 可按方位角手动指向' : guide.text;
     $('pointingAngle').textContent = guide.angle == null ? '—' : `${guide.angle.toFixed(1)}°`;
-    if (fresh) $('orientationStatus').textContent = `真北已校正 · 指南针精度约 ±${pose.accuracy.toFixed(0)}°${pose.accuracy > 20 ? ' · 请重新校准' : ''}`;
-    else if (orientation.enabled) $('orientationStatus').textContent = pose?.valid ? '等待新的姿态数据…' : poseMessage;
+    if (fresh) $('orientationStatus').textContent = `已应用磁偏角修正 · 系统报告误差约 ±${pose.accuracy.toFixed(0)}°`;
+    else if (orientation.enabled) $('orientationStatus').textContent = notice ? `${notice.title} · ${notice.message}` : poseMessage;
   }
   function renderPasses() {
     const list = $('passList'); list.replaceChildren();

@@ -53,14 +53,24 @@
 .orbit-readouts output { font:500 21px var(--font-mono); color:var(--accent-bright); font-variant-numeric:tabular-nums; }
 #orientationEnable,#trackingLocate { padding:6px; font-size:11px; }
 #orientationEnable:disabled { display:none; }
-.pointing-command { display:flex; align-items:center; justify-content:space-between; flex:none; gap:8px; min-height:34px; padding:6px 10px; border-radius:8px; background:var(--accent-soft); color:var(--text-dim); }
+.pointing-command { display:flex; align-items:center; justify-content:space-between; flex:none; gap:8px; min-height:34px; padding:7px 10px; border:1px solid transparent; border-radius:10px; background:var(--accent-soft); color:var(--text-dim); transition:background .2s,border-color .2s; }
 .pointing-command>span { font-size:11px; line-height:1.4; }
 .pointing-command output { flex:none; font:16px var(--font-mono); color:var(--accent); }
-.pointing-command[data-state="calibrating"],.pointing-command[data-state="warning"] { color:var(--accent-2); background:var(--accent-2-soft); box-shadow:inset 2px 0 var(--accent-2-line); }
-.pointing-command[data-state="calibrating"]::before { content:''; flex:none; width:17px; height:9px; border:1.5px solid currentColor; border-radius:3px; transform:rotate(-8deg); }
-.pointing-command[data-state="ready"] { color:var(--accent); }
-.pointing-command[data-state="ready"]::before { content:'✓'; font-size:14px; }
-#orientationGuide { flex:1; }
+.pointing-command:is([data-state="flat"],[data-state="calibrating"],[data-state="ready"]) { border-color:var(--accent-line); }
+.pointing-command[data-state="waiting"] { background:var(--surface-inset); border-color:var(--line); }
+.pointing-command[data-state="accuracy"] { background:var(--accent-2-soft); border-color:var(--accent-2-line); }
+#orientationGuide { display:flex; align-items:center; gap:9px; flex:1; min-width:0; }
+#orientationGuide[hidden],#orientationProgress[hidden] { display:none; }
+.orientation-icon { display:grid; place-items:center; flex:none; width:28px; height:28px; border:1px solid var(--accent-line); border-radius:8px; color:var(--accent); background:var(--surface-inset); font:16px var(--font-mono); }
+[data-state="waiting"] .orientation-icon { color:var(--text-dim); border-color:var(--line); font-size:10px; }
+[data-state="accuracy"] .orientation-icon { color:var(--accent-2); border-color:var(--accent-2-line); }
+.orientation-copy { display:grid; gap:2px; min-width:0; flex:1; }
+.orientation-copy strong { font:600 12px/1.35 var(--font-ui); color:var(--text); }
+.orientation-copy>span { font:11px/1.4 var(--font-ui); color:var(--text-dim); overflow-wrap:anywhere; }
+#orientationProgress { appearance:none; -webkit-appearance:none; flex:none; width:34px; height:4px; overflow:hidden; border:0; border-radius:3px; background:var(--line); color:var(--accent); }
+#orientationProgress::-webkit-progress-bar { background:var(--line); border-radius:3px; }
+#orientationProgress::-webkit-progress-value { background:var(--accent); border-radius:3px; transition:width .15s; }
+#orientationProgress::-moz-progress-bar { background:var(--accent); border-radius:3px; }
 .sky-console:not(.has-observer) .pointing-command { display:none; }
 .tracking-note { color:var(--text-dim); font-size:11px; line-height:1.8; margin:9px 0 0; overflow-wrap:anywhere; }
 .tracking-note.is-warning { color:var(--accent-2); }

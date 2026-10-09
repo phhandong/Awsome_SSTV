@@ -83,8 +83,10 @@ assert.match(pointingGuide({...pose,accuracy:40},{azimuth:0,elevation:30}).text,
 assert.doesNotMatch(pointingGuide(pose,{azimuth:180,elevation:89}).text,/向左|向右/);
 assert.equal(pointingGuide(pose,{azimuth:0,elevation:30},pose.time+3000).angle,null);
 let lastPose;
-const phone=new PhoneOrientation(p=>{lastPose=p;}); phone.declination=0;
-phone.consume({alpha:0,beta:0,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5}); phone.calibrate();
+const phone=new PhoneOrientation(p=>{lastPose=p;}); phone.declination=0; phone.enabled=true;
+// Stable sampling is covered in verify-orientation-auto; isolate geometry here.
+phone.offset=0;
+phone.consume({alpha:0,beta:0,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});
 assert.equal(lastPose.valid,true);
 phone.lastRender=0; phone.consume({alpha:270,beta:30,gamma:60,webkitCompassHeading:90,webkitCompassAccuracy:5});
 near(lastPose.azimuth,90,1e-6,'calibrated east with roll'); near(lastPose.elevation,30,1e-6,'calibrated pitch');

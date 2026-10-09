@@ -298,7 +298,7 @@ try {
     assert.equal(await page.isVisible('#orientationGuide'),true,'calibration guidance stays on the main tracking surface');
     assert.match(await page.textContent('#orientationGuide'),/平放.*2 秒/);
     assert.equal(await page.isVisible('#pointingHint'),false,'guidance shares the pointing row');
-    for(const [width,height] of [[390,844],[375,550]]) {
+    for(const [width,height] of [[390,844],[375,550],[320,568]]) {
       await page.setViewportSize({width,height});
       const fit=await page.evaluate(()=>['orientationGuide','skyPlot','trackingImageMount','trackingReceiveBtn'].every(id=>{
         const r=document.getElementById(id).getBoundingClientRect();
@@ -308,27 +308,51 @@ try {
       await page.screenshot({path:`test-artifacts/orientation-guide-${width}x${height}.png`});
     }
     await page.setViewportSize({width:390,height:844});
-    await page.evaluate(()=>{ const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:0,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e); });
+    async function orientationSample(values={}) {
+      await page.clock.runFor(100);
+      await page.evaluate(values=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:0,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5,...values});window.dispatchEvent(e);},values);
+    }
+    async function alignOrientation(values={}) { for(let i=0;i<22;i++) await orientationSample(values); }
+    await page.clock.runFor(3100);
+    assert.match(await page.textContent('#orientationGuide'),/等待方向数据/,'no-event startup must not show a stuck calibration');
+    await orientationSample();
     await page.click('#trackingSettingsOpen');
     await page.click('#orientationCalibrate');
     await page.click('#trackingSettingsClose');
+    assert.equal(await page.textContent('#poseAz'),'—','manual retry cannot accept one sample');
+    for(let i=0;i<11;i++) await orientationSample();
+    assert.ok(await page.locator('#orientationProgress').evaluate(el=>el.value>0&&el.value<100));
+    await page.screenshot({path:'test-artifacts/orientation-progress.png'});
+    await alignOrientation();
     await page.waitForFunction(()=>document.getElementById('poseAz').textContent!=='—');
     assert.match(await page.textContent('#orientationGuide'),/方向已就绪/);
     await page.click('#receiveTab'); await page.click('#trackTab');
-    await page.clock.runFor(100);
-    await page.evaluate(()=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:45,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e);});
+    await orientationSample({beta:45});
     assert.notEqual(await page.textContent('#poseEl'),'—','view switch retains calibration while tilted');
+    await orientationSample({beta:45,webkitCompassAccuracy:-1});
+    assert.equal(await page.textContent('#poseAz'),'—');
+    assert.match(await page.textContent('#orientationGuide'),/系统罗盘尚未就绪/);
+    assert.doesNotMatch(await page.textContent('#orientationGuide'),/磁性|干扰/);
+    for(let i=0;i<7;i++) await orientationSample({beta:45});
+    assert.equal(await page.textContent('#poseEl'),'45.0°','brief fault recovers without flat alignment');
+    await orientationSample({beta:45,webkitCompassAccuracy:40});
+    assert.equal(await page.locator('.pointing-command').getAttribute('data-state'),'accuracy');
+    await page.evaluate(()=>document.documentElement.dataset.theme='light');
+    await page.screenshot({path:'test-artifacts/orientation-accuracy-light.png'});
+    await page.evaluate(()=>document.documentElement.dataset.theme='dark');
+    await alignOrientation();
     await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'));});
     assert.equal(await page.textContent('#poseEl'),'—','background does not display an old pose');
     await page.clock.runFor(30000);
     await page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:false});document.dispatchEvent(new Event('visibilitychange'));});
-    assert.match(await page.textContent('#orientationGuide'),/无需重新平放/);
-    await page.clock.runFor(100);
-    await page.evaluate(()=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:45,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e);});
-    assert.equal(await page.textContent('#poseEl'),'45.0°','fresh tilted reading reuses recent calibration');
-    await page.clock.runFor(2100);
-    await page.evaluate(()=>{const e=new Event('deviceorientation');Object.assign(e,{alpha:0,beta:45,gamma:0,webkitCompassHeading:0,webkitCompassAccuracy:5});window.dispatchEvent(e);});
+    assert.match(await page.textContent('#orientationGuide'),/等待方向数据/);
+    await orientationSample({alpha:90,beta:45});
+    assert.match(await page.textContent('#orientationGuide'),/核验方向/);
+    assert.equal(await page.textContent('#poseEl'),'—','unverified resumed frame stays hidden');
+    await alignOrientation({alpha:90});
+    for(let i=0;i<22;i++) await orientationSample({alpha:90,beta:45});
     assert.equal(await page.isVisible('#orientationGuide'),false,'ready notice yields to pointing guidance');
+    assert.equal(await page.textContent('#poseEl'),'45.0°');
     await page.evaluate(()=>scrollTo(0,0));
     await page.screenshot({path:`test-artifacts/tracking-${prefix==='/'?'root':'subpath'}-mobile.png`,fullPage:true});
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,'mobile overflow');
