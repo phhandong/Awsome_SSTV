@@ -44,6 +44,9 @@ assert.equal(await response.text(), calendar.content, 'Calendar fetch receives t
 assert.equal(await calendarResponse(new Request(subscription.url)).text(), calendar.content, 'refreshes retain timestamps, UID and event content');
 assert.equal(await calendarWorker.fetch(new Request(subscription.url)).text(), calendar.content, 'Worker returns the same event as the local service');
 assert.equal(calendarWorker.fetch(new Request('https://decode.handong-joy.xyz/')).status, 404, 'Worker does not handle unrelated site pages');
+const secureRedirect = calendarWorker.fetch(new Request(subscription.url.replace(/^https:/, 'http:')));
+assert.equal(secureRedirect.status, 301);
+assert.equal(secureRedirect.headers.get('location'), subscription.url, 'HTTP webcal requests retain the event query when upgrading to HTTPS');
 assert.equal(calendarResponse(new Request(subscription.url, { method: 'HEAD' })).status, 200);
 assert.equal(await calendarResponse(new Request(subscription.url, { method: 'HEAD' })).text(), '');
 assert.equal(calendarResponse(new Request(subscription.url, { method: 'POST' })).status, 405);
