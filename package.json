@@ -43,6 +43,6 @@
     "mpg123-decoder": "^1.0.3",
     "playwright-core": "^1.62.1",
     "pngjs": "^7.0.0",
-    "satellite.js": "6.0.1"
+    "satellite.js": "7.1.0"
   }
 }
