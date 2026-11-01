@@ -36,7 +36,7 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "esbuild": "0.25.12",
+    "esbuild": "0.28.2",
     "geomagnetism": "0.2.0",
     "jpeg-js": "^0.4.4",
     "jsdom": "^29.1.1",
